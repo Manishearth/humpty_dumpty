@@ -1,4 +1,4 @@
-#![feature(plugin_registrar, quote, plugin, box_syntax, rustc_private, core)]
+#![feature(plugin_registrar, quote, plugin, box_syntax, rustc_private)]
 
 #![allow(missing_copy_implementations, unused)]
 
@@ -14,7 +14,7 @@ use rustc::lint::{Context, LintPassObject, LintArray, LintPass};
 use rustc::plugin::Registry;
 
 use syntax::ast::*;
-use rustc::middle::ty::ctxt;
+use rustc::middle::ty::{self, ctxt};
 use rustc::util::nodemap::{FnvHashMap, NodeMap};
 use rustc::middle::def::DefLocal;
 use syntax::visit;
@@ -42,57 +42,51 @@ impl LintPass for HumptyPass {
     }
 
     fn check_fn(&mut self, cx: &Context, _: visit::FnKind, _: &FnDecl, block: &Block, _: Span, _: NodeId) {
-        let mut visitor = DropVisitor::new(&*cx.tcx, block.id);
+        // TODO error if FnDecl contains protected types, unless there's
+        // the right attribute on this
+        let mut visitor = DropVisitor::new(cx, block.id);
         visit::walk_block(&mut visitor, block);
     }
 }
 
-struct DropVisitor<'a, 'tcx : 'a> {
-    tcx: &'a ctxt<'tcx>,
+struct DropVisitor<'a : 'b, 'tcx : 'a, 'b> {
+    // Type context, with all the goodies
+    cx: &'b Context<'a, 'tcx>,
     in_allowed: bool,
     in_dropper: bool,
+    // No need to store the span, we can
+    // do a lookup on the Map if we wish
     map: NodeMap<(NodeId, Span)>,
+    // The current block id
     current_block: NodeId,
-    in_pat_block: Option<CurrentPat>,
 }
 
-#[derive(Copy)]
-struct CurrentPat {
-    id: NodeId,
-    block: NodeId,
-}
 
-impl CurrentPat {
-    fn new(id: NodeId, block: NodeId) -> CurrentPat {
-        CurrentPat {
-            id: id,
-            block: block,
-        }
-    }
-}
-impl<'a, 'tcx> DropVisitor<'a, 'tcx> {
-    fn new(tcx: &'a ctxt<'tcx>, block: NodeId) -> DropVisitor<'a, 'tcx> {
+impl<'a, 'tcx, 'b> DropVisitor<'a, 'tcx, 'b> {
+    fn new(cx: &'b Context<'a, 'tcx>, block: NodeId) -> DropVisitor<'a, 'tcx, 'b> {
         DropVisitor {
-            tcx: tcx,
+            cx: cx,
             in_allowed: false,
             in_dropper: false,
             map: FnvHashMap(),
             current_block: block,
-            in_pat_block: None
         }
+    }
+    // Given a declaration-y pattern, look for types that are
+    // annotated accordingly and only store the pattern in that case
+    // (for efficiency)
+    fn walk_pat_and_add(&mut self, pat: &Pat, block: NodeId) {
+        // This doesn't actually do what the comment above says...yet
+        // Steps:
+        // use ty::walk_pat
+        // use ty::has_attr
+
+        // Stub: just indiscriminately adds it
+        self.map.insert(pat.id, (block, pat.span));
     }
 }
 
-impl<'a, 'tcx, 'v> visit::Visitor<'v> for DropVisitor<'a, 'tcx> {
-    fn visit_ident(&mut self, sp: Span, ident: Ident) {
-        if let Some(curr) = self.in_pat_block {
-            self.map.insert(curr.id, (curr.block, sp));
-            self.tcx.sess.span_note(sp, format!("Found local being declared, \
-                                                 with id {} and block {}",
-                                                 curr.id, curr.block).as_slice());
-        }
-    }
-
+impl<'a, 'b, 'tcx, 'v> visit::Visitor<'v> for DropVisitor<'a, 'tcx, 'b> {
     fn visit_decl(&mut self, d: &'v Decl) {
         if let DeclLocal(ref l) = d.node {
             if l.source == LocalFor {
@@ -106,9 +100,9 @@ impl<'a, 'tcx, 'v> visit::Visitor<'v> for DropVisitor<'a, 'tcx> {
             if let Some(ref ex) = l.init {
                 self.visit_expr(&*ex);
             }
-            self.in_pat_block = Some(CurrentPat::new(l.pat.id, self.current_block));
-            visit::walk_pat(self, &*l.pat);
-            self.in_pat_block = None;
+            // grumble grumble Copy grumble
+            let block = self.current_block;
+            self.walk_pat_and_add(&*l.pat, block);
         } else {
             // Walk normally
             visit::walk_decl(self, d);
@@ -120,15 +114,14 @@ impl<'a, 'tcx, 'v> visit::Visitor<'v> for DropVisitor<'a, 'tcx> {
             // Might need to be ExprPath(None, _)
             // to work on current nightly
             ExprPath(_) => {
-                let def = self.tcx.def_map.borrow().get(&ex.id).map(|&v| v);
+                let def = self.cx.tcx.def_map.borrow().get(&ex.id).map(|&v| v);
                 match def {
                     Some(DefLocal(id)) => {
-                        let decl = self.map[id];
-                        self.tcx.sess.span_warn(ex.span,
-                                                format!("Found usage of local variable, \
-                                                         declared at id {}, and block {}",
-                                                         id, decl.0).as_slice());
-                        self.tcx.sess.span_note(decl.1, "Declaration here");
+                        if is_protected(self.cx.tcx, ex) {
+                            let decl = self.map[id];
+                            self.cx.tcx.sess.span_warn(ex.span, "found usage of variable of protected type");
+                            self.cx.tcx.sess.span_note(decl.1, "declaration here");
+                        }
                     }
                     // Not a local binding, so it's
                     // not of any interest
@@ -143,4 +136,21 @@ impl<'a, 'tcx, 'v> visit::Visitor<'v> for DropVisitor<'a, 'tcx> {
             }
         }
     }
+}
+
+fn is_protected<'tcx>(cx: &ctxt<'tcx>, expr: &Expr) -> bool {
+    let ty = ty::expr_ty(cx, expr);
+    let mut protected = false;
+    ty::walk_ty(ty, |t| {
+        match t.sty {
+            ty::ty_enum(did, _) | ty::ty_struct(did, _) => {
+                if ty::has_attr(cx, did, "drop_protection") {
+                    protected = true;
+                    return;
+                }
+            }
+            _ => ()
+        }
+    });
+    protected
 }
