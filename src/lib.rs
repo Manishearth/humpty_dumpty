@@ -211,6 +211,7 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for DropVisitor<'a, 'tcx, 'b> {
     }
 
 }
+
 fn is_protected<'tcx>(cx: &ctxt<'tcx>, expr: &Expr) -> bool {
     let ty = ty::expr_ty(cx, expr);
     let mut protected = false;
