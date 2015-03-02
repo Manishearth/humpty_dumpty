@@ -12,8 +12,12 @@ extern crate rustc;
 
 use rustc::lint::{Context, LintPassObject, LintArray, LintPass, Level};
 use rustc::plugin::Registry;
+use rustc::metadata::csearch;
 
 use syntax::ast::*;
+use syntax::ast_map;
+use syntax::ast_util::is_local;
+use syntax::attr::{AttrMetaMethods};
 use rustc::middle::ty::{self, ctxt};
 use rustc::util::nodemap::{FnvHashMap, NodeMap};
 use rustc::middle::def::*;
@@ -21,6 +25,7 @@ use syntax::visit::{self, Visitor};
 use syntax::codemap::Span;
 
 use std::collections::HashMap;
+use std::borrow::Cow;
 
 #[plugin_registrar]
 pub fn plugin_registrar(reg: &mut Registry) {
@@ -185,7 +190,50 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for DropVisitor<'a, 'tcx, 'b> {
                     }
                 }
             }
-            // Laziness prevents me from doing the same for ExprMethodCall
+            ExprMethodCall(ref spanid, ref tys, ref params) => {
+                let method_call = ty::MethodCall::expr(ex.id);
+                let method_map = self.cx.tcx.method_map.borrow();
+                let method = method_map.get(&method_call);
+                if let Some(method_callee) = method {
+                    if let ty::MethodStatic(id) = method_callee.origin {
+                        let attrs = get_attrs_opt(self.cx.tcx, id);
+                        if let Some(v) = attrs {
+                            if v.iter().any(|item| item.check_name("allowed_on_protected")) {
+                                for param in params {
+                                    if let ExprPath(_) = param.node {
+                                        // It's an ident within an allowed method call,
+                                        // it's fine!
+                                        self.cx.tcx.sess.span_note(ex.span, "Allowed usage of type. Carry on!");
+                                        return;
+                                    } else {
+                                        // It could be a situation like
+                                        // allowed_fn(foo, bar, {foo(); bar(); unsafe_drop_fn(protected); baz()})
+                                        // this ensures that no trickery happens
+                                        self.visit_expr(&*param);
+                                    }
+                                }
+                            } else if v.iter().any(|item| item.check_name("allowed_drop")) {
+                                for param in params {
+                                    if let ExprPath(_) = param.node {
+                                        // It's an ident within an allowed drop call,
+                                        // we should remove it from the map if it was there
+                                        let def = self.cx.tcx.def_map.borrow().get(&param.id).map(|&x| x);
+                                        if let Some(DefLocal(id)) = def {
+                                            self.cx.tcx.sess.span_note(ex.span, "Properly dropped!");
+                                            self.map.remove(&id);
+                                            return;
+                                        }
+                                    } else {
+                                        self.visit_expr(&*param)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // Otherwise walk the expression
+                visit::walk_expr(self, ex);
+            },
             _ => {
                 // We'll need to handle special casing
                 // for match/for, and later any other type
@@ -227,4 +275,35 @@ fn is_protected<'tcx>(cx: &ctxt<'tcx>, expr: &Expr) -> bool {
         }
     });
     protected
+}
+
+
+// Copied from
+// https://github.com/rust-lang/rust/pull/22348/files#diff-d6c1a78a970f7c6174f36c924862b879R813
+// Thanks to @huon
+// Get the attributes of a definition, returning `None` if `did`
+// refers to nothing or something that cannot have attributes.
+pub fn get_attrs_opt<'tcx>(tcx: &'tcx ctxt, did: DefId)
+                           -> Option<Cow<'tcx, [Attribute]>>
+{
+    let attrs: Cow<'tcx, [Attribute]> = if is_local(did) {
+        match tcx.map.find(did.node) {
+            Some(ast_map::NodeItem(item)) => Cow::Borrowed(&item.attrs),
+            Some(ast_map::NodeForeignItem(item)) => Cow::Borrowed(&item.attrs),
+            Some(ast_map::NodeTraitItem(item)) => match *item {
+                RequiredMethod(ref ty_meth) => Cow::Borrowed(&ty_meth.attrs),
+                ProvidedMethod(ref meth) => Cow::Borrowed(&meth.attrs),
+                TypeTraitItem(ref ty) => Cow::Borrowed(&ty.attrs),
+            },
+            Some(ast_map::NodeImplItem(item)) => match *item {
+                MethodImplItem(ref meth) => Cow::Borrowed(&meth.attrs),
+                TypeImplItem(ref ty) => Cow::Borrowed(&ty.attrs),
+            },
+            Some(ast_map::NodeVariant(variant)) => Cow::Borrowed(&variant.node.attrs),
+            _ => return None
+        }
+    } else {
+        Cow::Owned(csearch::get_item_attrs(&tcx.sess.cstore, did))
+    };
+    Some(attrs)
 }
