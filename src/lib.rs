@@ -126,30 +126,27 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for DropVisitor<'a, 'tcx, 'b> {
         match ex.node {
             // Might need to be ExprPath(None, _)
             // to work on current nightly
-            ExprPath(_) => {
+
+            ExprPath(_, _) => {
                 let def = self.cx.tcx.def_map.borrow().get(&ex.id).map(|&v| v);
-                match def {
-                    Some(DefLocal(id)) => {
-                        if is_protected(self.cx.tcx, ex) {
-                            let decl = self.map[id];
-                            // TODO use proper lint erroring
-                            self.cx.tcx.sess.span_warn(ex.span, "found usage of variable of protected type");
-                            self.cx.tcx.sess.span_note(decl.1, "declaration here");
-                        }
+                if let Some(PathResolution { base_def: DefLocal(id),  .. }) = def {
+                    if is_protected(self.cx.tcx, ex) {
+                        let decl = self.map[id];
+                        // TODO use proper lint erroring
+                        self.cx.tcx.sess.span_warn(ex.span, "found usage of variable of protected type");
+                        self.cx.tcx.sess.span_note(decl.1, "declaration here");
                     }
-                    // Not a local binding, so it's
-                    // not of any interest
-                    _ => {}
                 }
             }
+
             ExprCall(ref name, ref params) => {
                 match name.node {
-                    ExprPath(_) => {
+                    ExprPath(_, _) => {
                         let def = self.cx.tcx.def_map.borrow().get(&name.id).map(|&x| x);
-                        if let Some(DefFn(id, _)) = def {
+                        if let Some(PathResolution { base_def: DefFn(id, _), .. }) = def {
                             if ty::has_attr(self.cx.tcx, id, "allowed_on_protected") {
                                 for param in params {
-                                    if let ExprPath(_) = param.node {
+                                    if let ExprPath(_, _) = param.node {
                                         // It's an ident within an allowed method call,
                                         // it's fine!
                                         self.cx.tcx.sess.span_note(ex.span, "Allowed usage of type. Carry on!")
@@ -162,11 +159,11 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for DropVisitor<'a, 'tcx, 'b> {
                                 }
                             } else if ty::has_attr(self.cx.tcx, id, "allowed_drop") {
                                 for param in params {
-                                    if let ExprPath(_) = param.node {
+                                    if let ExprPath(_, _) = param.node {
                                         // It's an ident within an allowed drop call,
                                         // we should remove it from the map if it was there
                                         let def = self.cx.tcx.def_map.borrow().get(&param.id).map(|&x| x);
-                                        if let Some(DefLocal(id)) = def {
+                                        if let Some(PathResolution { base_def: DefLocal(id), .. }) = def {
                                             self.cx.tcx.sess.span_note(ex.span, "Properly dropped!");
                                             self.map.remove(&id);
                                         }
@@ -200,7 +197,7 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for DropVisitor<'a, 'tcx, 'b> {
                         if let Some(v) = attrs {
                             if v.iter().any(|item| item.check_name("allowed_on_protected")) {
                                 for param in params {
-                                    if let ExprPath(_) = param.node {
+                                    if let ExprPath(_, _) = param.node {
                                         // It's an ident within an allowed method call,
                                         // it's fine!
                                         self.cx.tcx.sess.span_note(ex.span, "Allowed usage of type. Carry on!");
@@ -214,11 +211,11 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for DropVisitor<'a, 'tcx, 'b> {
                                 }
                             } else if v.iter().any(|item| item.check_name("allowed_drop")) {
                                 for param in params {
-                                    if let ExprPath(_) = param.node {
+                                    if let ExprPath(_, _) = param.node {
                                         // It's an ident within an allowed drop call,
                                         // we should remove it from the map if it was there
                                         let def = self.cx.tcx.def_map.borrow().get(&param.id).map(|&x| x);
-                                        if let Some(DefLocal(id)) = def {
+                                        if let Some(PathResolution { base_def: DefLocal(id), .. }) = def {
                                             self.cx.tcx.sess.span_note(ex.span, "Properly dropped!");
                                             self.map.remove(&id);
                                             return;
