@@ -206,9 +206,45 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for MyVisitor<'a, 'tcx, 'b> {
                 // Make sure the returned hash map is the same as the one before
                 let v1 = self.clone();
             }
+            ExprMatch(ref e1, ref arms, _) => {
+                // Consume stuff in e
+                self.visit_expr(&e1);
+
+                // Walk each of the arms, and check that outcoming hms are
+                // identical
+                let mut old: Option<Self> = None;
+                for arm in arms {
+                    let mut v = self.clone();
+                    v.visit_arm(&arm);
+                    if let Some(tmp) = old {
+                        if tmp.map != v.map {
+                            self.cx.tcx.sess.span_err(e.span, "Match arm is not linear");
+                        }
+                    }
+                    old = Some(v);
+                }
+                if let Some(new) = old {
+                    self.map = new.map
+                }
+            }
             // TODO: We need to do something about match arms, for loops, while etc.
             _ => visit::walk_expr(self, e),
         }
+    }
+
+    fn visit_arm(&mut self, a: &'v Arm) {
+        // Add patterns
+        for pat in a.pats.iter() {
+            self.walk_pat_and_add(&pat);
+        }
+
+        // TODO: What about guards
+        if let Some(_) = a.guard {
+            unimplemented!();
+        }
+
+        // Consume stuff in body
+        visit::walk_expr(self, &a.body);
     }
 
     fn visit_block(&mut self, b: &'v Block) {
