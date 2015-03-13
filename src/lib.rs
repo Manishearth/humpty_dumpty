@@ -120,11 +120,11 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for MyVisitor<'a, 'tcx, 'b> {
             // Remove moved variables from map
             // Maybe it's a reference? Use maybe_walk_expr
             if let Some(ref ex) = l.init {
-                self.visit_expr(&*ex);
+                self.visit_expr(&ex);
             }
 
             // Add the ids in the pat
-            self.walk_pat_and_add(&*l.pat);
+            self.walk_pat_and_add(&l.pat);
             return;
         }
         visit::walk_decl(self, d);
@@ -148,7 +148,7 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for MyVisitor<'a, 'tcx, 'b> {
         match e.node {
             ExprAssign(ref e1, ref e2) => {
                 // Remove all protected vars in rhs
-                visit::walk_expr(self, &e2);
+                self.visit_expr(&e2);
 
                 // TODO: Add all protected vars in lhs
                 if let ExprPath(_, _) = e1.node {
@@ -179,7 +179,7 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for MyVisitor<'a, 'tcx, 'b> {
             }
             ExprIf(ref e1, ref b, ref else_block) => {
                 // Consume stuff in expr
-                visit::walk_expr(self, &e1);
+                self.visit_expr(&e1);
 
                 // visit block(s)
                 if let &Some(ref e2) = else_block {
