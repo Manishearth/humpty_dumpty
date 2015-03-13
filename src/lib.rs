@@ -74,6 +74,14 @@ impl <'a, 'tcx, 'b> MyVisitor<'a, 'tcx, 'b> {
         visitor
     }
 
+    fn is_protected(&self, ty: ty::Ty<'tcx>) -> bool {
+        match ty.sty {
+            ty::sty::ty_enum(did, _) | ty::sty::ty_struct(did, _)
+                if ty::has_attr(self.cx.tcx, did, "drop_protect") => true,
+            _ => false,
+        }
+    }
+
     fn walk_pat_and_add(&mut self, pat: &Pat) {
         let ty = ty::pat_ty(self.cx.tcx, pat);
         ty::maybe_walk_ty(ty, |t| {
@@ -125,7 +133,8 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for MyVisitor<'a, 'tcx, 'b> {
 
     fn visit_stmt(&mut self, s: &'v Stmt) {
         if let StmtSemi(ref e, id) = s.node {
-            if is_protected(self.cx.tcx, e) {
+            let ty = ty::expr_ty(self.cx.tcx, e);
+            if self.is_protected(ty) {
                 self.cx.tcx.sess.span_err(s.span, "Return type is protected but unused");
             }
         }
@@ -153,7 +162,8 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for MyVisitor<'a, 'tcx, 'b> {
                 // If the path is a local id that's in our map and it is getting
                 // moved, remove it from self.map. If we got this far, it is a
                 // move
-                if is_protected(self.cx.tcx, e) {
+                let ty = ty::expr_ty(self.cx.tcx, e);
+                if self.is_protected(ty) {
                     // Remove from map
                     if let Some(id) = expr_to_localid(self.cx.tcx, e) {
                         self.cx.tcx.sess.span_note(e.span, "Consuming protected var");
@@ -211,7 +221,8 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for MyVisitor<'a, 'tcx, 'b> {
 
         if let Some(ref e) = b.expr {
             debug!("visit_block: expr is {:?}\n", e);
-            if is_protected(self.cx.tcx, e) {
+            let ty = ty::expr_ty(self.cx.tcx, e);
+            if self.is_protected(ty) {
                 // This value is returned, and thus we can consume it
                 visit::walk_expr(self, e);
             }
@@ -225,16 +236,6 @@ fn expr_to_localid<'tcx>(tcx: &'tcx ctxt, expr: &Expr) -> Option<NodeId> {
         Some(id)
     } else {
         None
-    }
-}
-
-fn is_protected<'tcx>(tcx: &'tcx ctxt, expr: &Expr) -> bool {
-    let ty = ty::expr_ty(tcx, expr);
-
-    match ty.sty {
-        ty::sty::ty_enum(did, _) | ty::sty::ty_struct(did, _)
-            if ty::has_attr(tcx, did, "drop_protect") => true,
-        _ => false,
     }
 }
 
