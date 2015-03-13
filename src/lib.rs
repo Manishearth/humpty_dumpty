@@ -20,6 +20,7 @@ use rustc::metadata::csearch;
 
 use syntax::ast::*;
 use syntax::ast_map;
+use syntax::ast_util;
 use syntax::ast_util::is_local;
 use syntax::attr::{AttrMetaMethods};
 use rustc::middle::ty::{self, ctxt};
@@ -82,20 +83,19 @@ impl <'a, 'tcx, 'b> MyVisitor<'a, 'tcx, 'b> {
     }
 
     fn walk_pat_and_add(&mut self, pat: &Pat) {
-        let ty = ty::pat_ty(self.cx.tcx, pat);
-        ty::maybe_walk_ty(ty, |t| {
-            match t.sty {
-                // We can ignore references, since they can at most contains
-                // references to other values, we're only interested owned
-                // values.
-                ty::ty_rptr(_, _) => return false,
-                ty::ty_enum(did, _) | ty::ty_struct(did, _) => {
-                    if ty::has_attr(self.cx.tcx, did, "drop_protect") {
-                        self.cx.tcx.sess.span_note(pat.span, "Adding drop protected type to map");
-                        self.map.insert(pat.id, pat.span);
+        ast_util::walk_pat(pat, |p| {
+            if let PatIdent(_, _, _) = p.node {
+                let ty = ty::pat_ty(self.cx.tcx, p);
+                let mut protected = false;
+                ty::walk_ty(ty, |t| {
+                    if self.is_protected(t) {
+                        protected = true;
                     }
+                });
+                if protected {
+                    self.cx.tcx.sess.span_note(p.span, &format!("Adding drop protected type to map. Id: {:?}", p.id));
+                    self.map.insert(p.id, p.span);
                 }
-                _ => {}
             }
             true
         });
