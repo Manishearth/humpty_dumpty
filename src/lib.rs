@@ -45,7 +45,7 @@ impl LintPass for Pass {
             visitor.walk_pat_and_add(&arg.pat);
         }
 
-        visitor.visit_block(block);
+        visit::walk_block(&mut visitor, block);
 
         let attrs = cx.tcx.map.attrs(id);
         for var in visitor.map.iter() {
