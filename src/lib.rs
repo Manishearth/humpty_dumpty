@@ -51,10 +51,9 @@ impl LintPass for Pass {
         for var in visitor.map.iter() {
             // TODO: prettify
             if !can_drop(cx.tcx, attrs, var.0) {
-                cx.tcx.sess.span_err(block.span, &format!("dropped var: {:?}", var));
+                cx.tcx.sess.span_err(*var.1, "dropped var");
             }
         }
-
     }
 }
 
