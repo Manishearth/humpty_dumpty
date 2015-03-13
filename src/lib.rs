@@ -161,14 +161,11 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for MyVisitor<'a, 'tcx, 'b> {
                 // If the path is a local id that's in our map and it is getting
                 // moved, remove it from self.map. If we got this far, it is a
                 // move
-                let ty = ty::expr_ty(self.cx.tcx, e);
-                if self.is_protected(ty) {
-                    // Remove from map
-                    if let Some(id) = expr_to_localid(self.cx.tcx, e) {
+                if let Some(id) = expr_to_localid(self.cx.tcx, e) {
+                    debug!("Trying to find id: {:?}\n", id);
+                    if self.map.contains_key(&id) {
                         self.cx.tcx.sess.span_note(e.span, "Consuming protected var");
-                        if let None = self.map.remove(&id) {
-                            self.cx.tcx.sess.span_err(e.span, "Var does not exist in map!");
-                        }
+                        self.map.remove(&id).unwrap();
                     }
                 }
                 visit::walk_expr(self, e);
