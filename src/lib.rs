@@ -180,9 +180,13 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for MyVisitor<'a, 'tcx, 'b> {
             ExprCall(_, _) | ExprMethodCall(_, _, _) => {
                 visit::walk_expr(self, e);
             }
-            ExprAddrOf(_, _) => {
-                // Ignore children
-                return;
+            ExprAddrOf(_, ref e1) => {
+                if let ExprPath(_, _) = e1.node {
+                    // ignore
+                } else {
+                    // recurse on e1
+                    self.visit_expr(&e1);
+                }
             }
             ExprIf(ref e1, ref b, ref else_block) => {
                 // Consume stuff in expr
