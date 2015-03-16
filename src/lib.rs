@@ -146,15 +146,22 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for MyVisitor<'a, 'tcx, 'b> {
         // At least ExprCall and ExprMethodCall
         debug!("visit_expr: {:?}\n", e);
         match e.node {
-            ExprAssign(ref e1, ref e2) => {
+            ExprAssign(ref lhs, ref rhs) => {
                 // Remove all protected vars in rhs
-                self.visit_expr(&e2);
+                self.visit_expr(&rhs);
 
-                // TODO: Add all protected vars in lhs
-                if let ExprPath(_, _) = e1.node {
-                    self.map.insert(expr_to_localid(self.cx.tcx, e1).unwrap(), e.span);
+                // Get the defid
+                let defid = if let ExprPath(_, _) = lhs.node {
+                    expr_to_localid(self.cx.tcx, lhs).unwrap()
                 } else {
-                    unimplemented!();
+                    unimplemented!()
+                };
+
+                // Check that we're not overwriting something
+                if self.map.contains_key(&defid) {
+                    self.cx.tcx.sess.span_err(lhs.span, "cannot overwrite linear type");
+                } else {
+                    self.map.insert(defid, e.span);
                 }
             }
             ExprPath(_, _) => {
