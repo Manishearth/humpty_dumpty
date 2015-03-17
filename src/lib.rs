@@ -217,28 +217,55 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for MyVisitor<'a, 'tcx, 'b> {
                 // Make sure the returned hash map is the same as the one before
                 let v1 = self.clone();
             }
-            ExprMatch(ref e1, ref arms, _) => {
+            ExprMatch(ref e1, ref arms, ref source) => {
                 // Consume stuff in e
                 self.visit_expr(&e1);
 
-                // Walk each of the arms, and check that outcoming hms are
-                // identical
-                let mut old: Option<Self> = None;
-                for arm in arms {
-                    let mut v = self.clone();
-                    v.visit_arm(&arm);
-                    if let Some(tmp) = old {
-                        if tmp.map != v.map {
-                            self.cx.tcx.sess.span_err(e.span, "Match arm is not linear");
+                // If the match looks like this, we're in an expanded for loop:
+                // match ::std::iter::IntoIterator::into_iter(&[1, 2, 3]) {
+                //     mut iter =>
+                //         loop  {
+                //             match ::std::iter::Iterator::next(&mut iter) {   <- ForLoopDesugar
+                //                 ::std::option::Option::Some(x) => { }
+                //                 ::std::option::Option::None => break ,
+                //             }
+                //         },
+                // }
+                let mut is_for_loop = false;
+                if let [Arm { ref body, .. }] = &arms[..] {
+                    if let ExprLoop(ref loop_block, _) = body.node {
+                        if let &Block { expr: Some(ref loop_expr), .. } = &**loop_block {
+                            if let ExprMatch(_, _, MatchSource::ForLoopDesugar) = loop_expr.node {
+                                self.cx.tcx.sess.span_note(e.span, "Desugar");
+                                is_for_loop = true;
+                                // Skip pattern in outermost arm, just visit the body
+                                // TODO: Guards
+                                self.visit_expr(body);
+                            }
                         }
                     }
-                    old = Some(v);
                 }
-                if let Some(new) = old {
-                    self.map = new.map
+
+                if !is_for_loop {
+                    // Walk each of the arms, and check that outcoming hms are
+                    // identical
+                    let mut old: Option<Self> = None;
+                    for arm in arms {
+                        let mut v = self.clone();
+                        v.visit_arm(&arm);
+                        if let Some(tmp) = old {
+                            if tmp.map != v.map {
+                                self.cx.tcx.sess.span_err(e.span, "Match arms are not linear");
+                            }
+                        }
+                        old = Some(v);
+                    }
+                    if let Some(new) = old {
+                        self.map = new.map
+                    }
                 }
             }
-            // TODO: We need to do something about match arms, for loops, while etc.
+            // TODO: We need to do something about while loops, breaks, returns.
             _ => visit::walk_expr(self, e),
         }
     }
