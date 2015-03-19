@@ -5,10 +5,14 @@
 #![plugin(syntax)]
 #![plugin(rustc)]
 
+#![crate_type="dylib"]
+
 #[macro_use]
 extern crate syntax;
 #[macro_use]
 extern crate rustc;
+#[macro_use]
+extern crate log;
 
 use rustc::lint::{Context, LintPassObject, LintArray, LintPass, Level};
 use rustc::plugin::Registry;
@@ -16,291 +20,315 @@ use rustc::metadata::csearch;
 
 use syntax::ast::*;
 use syntax::ast_map;
+use syntax::ast_util;
 use syntax::ast_util::is_local;
 use syntax::attr::{AttrMetaMethods};
 use rustc::middle::ty::{self, ctxt};
+use rustc::util::ppaux::Repr;
 use rustc::util::nodemap::{FnvHashMap, NodeMap};
 use rustc::middle::def::*;
 use syntax::visit::{self, Visitor};
 use syntax::codemap::Span;
 
-use std::collections::HashMap;
-use std::borrow::Cow;
+declare_lint!(TEST_LINT, Warn, "Warn about items named 'lintme'");
 
-#[plugin_registrar]
-pub fn plugin_registrar(reg: &mut Registry) {
-    reg.register_lint_pass(box HumptyPass as LintPassObject);
-}
+struct Pass;
 
-
-declare_lint!(DROP_VIOLATION, Deny,
-              "Violations of the drop contract");
-
-/// Prefer str.to_owned() over str.to_string()
-///
-/// The latter creates a `Formatter` and is 5x slower than the former
-pub struct HumptyPass;
-
-impl LintPass for HumptyPass {
+impl LintPass for Pass {
     fn get_lints(&self) -> LintArray {
-        lint_array!(DROP_VIOLATION)
+        lint_array!(TEST_LINT)
     }
 
-    fn check_fn(&mut self, cx: &Context, _: visit::FnKind, _: &FnDecl, block: &Block, _: Span, _: NodeId) {
-        // TODO error if FnDecl contains protected types, unless there's
-        // the right attribute on this
-        let mut visitor = DropVisitor::new(cx, block.id);
-        visitor.visit_block(block);
+    fn check_fn(&mut self, cx: &Context, _: visit::FnKind, decl: &FnDecl, block: &Block, span: Span, id: NodeId) {
+        // Walk the arguments and add them to the map
+        let mut visitor = MyVisitor::new(cx, block.id);
+        for arg in decl.inputs.iter() {
+            visitor.walk_pat_and_add(&arg.pat);
+        }
+
+        visit::walk_block(&mut visitor, block);
+
+        let attrs = cx.tcx.map.attrs(id);
+        for var in visitor.map.iter() {
+            // TODO: prettify
+            if !can_drop(cx.tcx, attrs, var.0) {
+                cx.tcx.sess.span_err(*var.1, "dropped var");
+            }
+        }
     }
 }
 
-struct DropVisitor<'a : 'b, 'tcx : 'a, 'b> {
+#[derive(Clone)]
+struct MyVisitor<'a : 'b, 'tcx : 'a, 'b> {
     // Type context, with all the goodies
+    map: NodeMap<Span>, // (blockid and span for declaration)
     cx: &'b Context<'a, 'tcx>,
-    // No need to store the span, we can
-    // do a lookup on the Map if we wish
-    map: NodeMap<(NodeId, Span)>,
-    // The current block id
-    current_block: NodeId,
 }
 
+impl <'a, 'tcx, 'b> MyVisitor<'a, 'tcx, 'b> {
+    fn new(cx: &'b Context<'a, 'tcx>, id: NodeId) -> Self {
+        let map = FnvHashMap();
+        let visitor = MyVisitor { cx: cx,
+                                  map: map,
+        };
+        visitor
+    }
 
-impl<'a, 'tcx, 'b> DropVisitor<'a, 'tcx, 'b> {
-    fn new(cx: &'b Context<'a, 'tcx>, block: NodeId) -> DropVisitor<'a, 'tcx, 'b> {
-        DropVisitor {
-            cx: cx,
-            map: FnvHashMap(),
-            current_block: block,
+    fn is_protected(&self, ty: ty::Ty<'tcx>) -> bool {
+        match ty.sty {
+            ty::sty::ty_enum(did, _) | ty::sty::ty_struct(did, _)
+                if ty::has_attr(self.cx.tcx, did, "drop_protect") => true,
+            _ => false,
         }
     }
 
-    fn walk_pat_and_add(&mut self, pat: &Pat, block: NodeId) {
-        let ty = ty::pat_ty(self.cx.tcx, pat);
-        let mut protected = 0u8;
-        ty::walk_ty(ty, |t| {
-            match t.sty {
-                ty::ty_enum(did, _) | ty::ty_struct(did, _) => {
-                    if ty::has_attr(self.cx.tcx, did, "drop_protection") {
-                        protected += 1;
-                        return;
+    fn walk_pat_and_add(&mut self, pat: &Pat) {
+        ast_util::walk_pat(pat, |p| {
+            if let PatIdent(_, _, _) = p.node {
+                let ty = ty::pat_ty(self.cx.tcx, p);
+                let mut protected = false;
+                ty::walk_ty(ty, |t| {
+                    if self.is_protected(t) {
+                        protected = true;
                     }
+                });
+                if protected {
+                    self.cx.tcx.sess.span_note(p.span, &format!("Adding drop protected type to map. Id: {:?}", p.id));
+                    self.map.insert(p.id, p.span);
                 }
-                _ => ()
             }
+            true
         });
-        if protected == 1 {
-            self.map.insert(pat.id, (block, pat.span));
-        } else if protected == 2 {
-            self.cx.span_lint(DROP_VIOLATION, pat.span, "This pattern contains multiple \
-                                                         drop-protected types, please split it up \
-                                                         somehow. We only support destructuring of one \
-                                                         drop-protected type at a time")
-        }
     }
 }
 
-impl<'a, 'b, 'tcx, 'v> Visitor<'v> for DropVisitor<'a, 'tcx, 'b> {
+impl<'a, 'b, 'tcx, 'v> Visitor<'v> for MyVisitor<'a, 'tcx, 'b> {
     fn visit_decl(&mut self, d: &'v Decl) {
+        // If d is local and if d.ty is protected:
+        //  - First handle the initializer: We need to remove any used variables that are moved
+        //  - Also, if the initializer is a reference, then what?
+        //  - then add pat.id to self.map so we can track it going forward
+        // We also need to handle if l.source is a LocalFor
+
+        // self.cx.tcx.sess.span_note(d.span, &format!("decl: {:?}\n", d));
         if let DeclLocal(ref l) = d.node {
+            debug!("decllocal: {:?}\n", ty::pat_ty(self.cx.tcx, &l.pat));
             if l.source == LocalFor {
-                // We don't handle for bindings yet
-                // since they are tied to a different block
-                // Delegate to the usual walker
-                visit::walk_decl(self, d);
-                return;
+                unimplemented!();
             }
-            // First walk down the initializer
+
+            // Remove moved variables from map
+            // Maybe it's a reference? Use maybe_walk_expr
             if let Some(ref ex) = l.init {
-                self.visit_expr(&*ex);
+                self.visit_expr(&ex);
             }
-            // grumble grumble Copy grumble
-            let block = self.current_block;
-            self.walk_pat_and_add(&*l.pat, block);
-        } else {
-            // Walk normally
-            visit::walk_decl(self, d);
+
+            // Add the ids in the pat
+            self.walk_pat_and_add(&l.pat);
+            return;
+        }
+        visit::walk_decl(self, d);
+    }
+
+    fn visit_stmt(&mut self, s: &'v Stmt) {
+        if let StmtSemi(ref e, id) = s.node {
+            let ty = ty::expr_ty(self.cx.tcx, e);
+            if self.is_protected(ty) {
+                self.cx.tcx.sess.span_err(s.span, "Return type is protected but unused");
+            }
+        }
+        visit::walk_stmt(self, s);
+    }
+
+    fn visit_expr(&mut self, e: &'v Expr) {
+        // Visit and remove all consumed values
+        // Which Exprs do we need to handle?
+        // At least ExprCall and ExprMethodCall
+        debug!("visit_expr: {:?}\n", e);
+        match e.node {
+            ExprAssign(ref lhs, ref rhs) => {
+                // Remove all protected vars in rhs
+                self.visit_expr(&rhs);
+
+                // Get the defid
+                let defid = if let ExprPath(_, _) = lhs.node {
+                    expr_to_localid(self.cx.tcx, lhs).unwrap()
+                } else {
+                    unimplemented!()
+                };
+
+                // Check that we're not overwriting something
+                if self.map.contains_key(&defid) {
+                    self.cx.tcx.sess.span_err(lhs.span, "cannot overwrite linear type");
+                } else {
+                    self.map.insert(defid, e.span);
+                }
+            }
+            ExprPath(_, _) => {
+                // If the path is a local id that's in our map and it is getting
+                // moved, remove it from self.map. If we got this far, it is a
+                // move
+                if let Some(id) = expr_to_localid(self.cx.tcx, e) {
+                    debug!("Trying to find id: {:?}\n", id);
+                    if self.map.contains_key(&id) {
+                        self.cx.tcx.sess.span_note(e.span, "Consuming protected var");
+                        self.map.remove(&id).unwrap();
+                    }
+                }
+                visit::walk_expr(self, e);
+            }
+            ExprCall(_, _) | ExprMethodCall(_, _, _) => {
+                visit::walk_expr(self, e);
+            }
+            ExprAddrOf(_, ref e1) => {
+                if let ExprPath(_, _) = e1.node {
+                    // ignore
+                } else {
+                    // recurse on e1
+                    self.visit_expr(&e1);
+                }
+            }
+            ExprIf(ref e1, ref b, ref else_block) => {
+                // Consume stuff in expr
+                self.visit_expr(&e1);
+
+                // visit block(s)
+                if let &Some(ref e2) = else_block {
+                    // The resulting hms should be the same
+                    let mut v1 = self.clone();
+                    let mut v2 = self.clone();
+                    v1.visit_block(&b);
+                    v2.visit_expr(&e2);
+                    if v1.map != v2.map {
+                        self.cx.tcx.sess.span_err(e.span, "Branch arms are not linear");
+                    }
+                    self.map = v1.map;
+                } else {
+                    // The resulting hm should be the same as before
+                    let mut v1 = self.clone();
+                    v1.visit_block(&b);
+                    if self.map != v1.map {
+                        self.cx.tcx.sess.span_err(e.span, "If branch is not linear");
+                    }
+                    // Is this necessary?
+                    // self.map = v1.map;
+                }
+
+                // Make sure the returned hash map is the same as the one before
+                let v1 = self.clone();
+            }
+            ExprMatch(ref e1, ref arms, ref source) => {
+                // Consume stuff in e
+                self.visit_expr(&e1);
+
+                // If the match looks like this, we're in an expanded for loop:
+                // match ::std::iter::IntoIterator::into_iter(&[1, 2, 3]) {
+                //     mut iter =>
+                //         loop  {
+                //             match ::std::iter::Iterator::next(&mut iter) {   <- ForLoopDesugar
+                //                 ::std::option::Option::Some(x) => { }
+                //                 ::std::option::Option::None => break ,
+                //             }
+                //         },
+                // }
+                let mut is_for_loop = false;
+                if let [Arm { ref body, .. }] = &arms[..] {
+                    if let ExprLoop(ref loop_block, _) = body.node {
+                        if let &Block { expr: Some(ref loop_expr), .. } = &**loop_block {
+                            if let ExprMatch(_, _, MatchSource::ForLoopDesugar) = loop_expr.node {
+                                self.cx.tcx.sess.span_note(e.span, "Desugar");
+                                is_for_loop = true;
+                                // Skip pattern in outermost arm, just visit the body
+                                // TODO: Guards
+                                self.visit_expr(body);
+                            }
+                        }
+                    }
+                }
+
+                if !is_for_loop {
+                    // Walk each of the arms, and check that outcoming hms are
+                    // identical
+                    let mut old: Option<Self> = None;
+                    for arm in arms {
+                        let mut v = self.clone();
+                        v.visit_arm(&arm);
+                        if let Some(tmp) = old {
+                            if tmp.map != v.map {
+                                self.cx.tcx.sess.span_err(e.span, "Match arms are not linear");
+                            }
+                        }
+                        old = Some(v);
+                    }
+                    if let Some(new) = old {
+                        self.map = new.map
+                    }
+                }
+            }
+            // TODO: We need to do something about while loops, breaks, returns.
+            _ => visit::walk_expr(self, e),
         }
     }
 
-    fn visit_expr(&mut self, ex: &'v Expr) {
-        match ex.node {
-            // Might need to be ExprPath(None, _)
-            // to work on current nightly
-
-            ExprPath(_, _) => {
-                let def = self.cx.tcx.def_map.borrow().get(&ex.id).map(|&v| v);
-                if let Some(PathResolution { base_def: DefLocal(id),  .. }) = def {
-                    if is_protected(self.cx.tcx, ex) {
-                        let decl = self.map[id];
-                        // TODO use proper lint erroring
-                        self.cx.tcx.sess.span_warn(ex.span, "found usage of variable of protected type");
-                        self.cx.tcx.sess.span_note(decl.1, "declaration here");
-                    }
-                }
-            }
-
-            ExprCall(ref name, ref params) => {
-                match name.node {
-                    ExprPath(_, _) => {
-                        let def = self.cx.tcx.def_map.borrow().get(&name.id).map(|&x| x);
-                        if let Some(PathResolution { base_def: DefFn(id, _), .. }) = def {
-                            if ty::has_attr(self.cx.tcx, id, "allowed_on_protected") {
-                                for param in params {
-                                    if let ExprPath(_, _) = param.node {
-                                        // It's an ident within an allowed method call,
-                                        // it's fine!
-                                        self.cx.tcx.sess.span_note(ex.span, "Allowed usage of type. Carry on!")
-                                    } else {
-                                        // It could be a situation like
-                                        // allowed_fn(foo, bar, {foo(); bar(); unsafe_drop_fn(protected); baz()})
-                                        // this ensures that no trickery happens
-                                        self.visit_expr(&*param)
-                                    }
-                                }
-                            } else if ty::has_attr(self.cx.tcx, id, "allowed_drop") {
-                                for param in params {
-                                    if let ExprPath(_, _) = param.node {
-                                        // It's an ident within an allowed drop call,
-                                        // we should remove it from the map if it was there
-                                        let def = self.cx.tcx.def_map.borrow().get(&param.id).map(|&x| x);
-                                        if let Some(PathResolution { base_def: DefLocal(id), .. }) = def {
-                                            self.cx.tcx.sess.span_note(ex.span, "Properly dropped!");
-                                            self.map.remove(&id);
-                                        }
-                                    } else {
-                                        self.visit_expr(&*param)
-                                    }
-                                }
-                            } else {
-                                visit::walk_expr(self, ex)
-                            }
-                        } else {
-                            visit::walk_expr(self, ex)
-                        }
-                    }
-                    _ => {
-                        // Technically we could have a function producing function
-                        // or something here, that may produce safe functions
-                        // We can probably write sophisticated checks for that,
-                        // but we don't need to really.
-                        visit::walk_expr(self, ex)
-                    }
-                }
-            }
-            ExprMethodCall(ref spanid, ref tys, ref params) => {
-                let method_call = ty::MethodCall::expr(ex.id);
-                let method_map = self.cx.tcx.method_map.borrow();
-                let method = method_map.get(&method_call);
-                if let Some(method_callee) = method {
-                    if let ty::MethodStatic(id) = method_callee.origin {
-                        let attrs = get_attrs_opt(self.cx.tcx, id);
-                        if let Some(v) = attrs {
-                            if v.iter().any(|item| item.check_name("allowed_on_protected")) {
-                                for param in params {
-                                    if let ExprPath(_, _) = param.node {
-                                        // It's an ident within an allowed method call,
-                                        // it's fine!
-                                        self.cx.tcx.sess.span_note(ex.span, "Allowed usage of type. Carry on!");
-                                        return;
-                                    } else {
-                                        // It could be a situation like
-                                        // allowed_fn(foo, bar, {foo(); bar(); unsafe_drop_fn(protected); baz()})
-                                        // this ensures that no trickery happens
-                                        self.visit_expr(&*param);
-                                    }
-                                }
-                            } else if v.iter().any(|item| item.check_name("allowed_drop")) {
-                                for param in params {
-                                    if let ExprPath(_, _) = param.node {
-                                        // It's an ident within an allowed drop call,
-                                        // we should remove it from the map if it was there
-                                        let def = self.cx.tcx.def_map.borrow().get(&param.id).map(|&x| x);
-                                        if let Some(PathResolution { base_def: DefLocal(id), .. }) = def {
-                                            self.cx.tcx.sess.span_note(ex.span, "Properly dropped!");
-                                            self.map.remove(&id);
-                                            return;
-                                        }
-                                    } else {
-                                        self.visit_expr(&*param)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                // Otherwise walk the expression
-                visit::walk_expr(self, ex);
-            },
-            _ => {
-                // We'll need to handle special casing
-                // for match/for, and later any other type
-                // of branch (if)
-                visit::walk_expr(self, ex);
-            }
+    fn visit_arm(&mut self, a: &'v Arm) {
+        // Add patterns
+        for pat in a.pats.iter() {
+            self.walk_pat_and_add(&pat);
         }
+
+        // TODO: What about guards
+        if let Some(_) = a.guard {
+            unimplemented!();
+        }
+
+        // Consume stuff in body
+        visit::walk_expr(self, &a.body);
     }
 
     fn visit_block(&mut self, b: &'v Block) {
-        let old_id = self.current_block;
-        self.current_block = b.id;
+        debug!("visit_block: stmts: {:?}\n", b.stmts);
         visit::walk_block(self, b);
-        for (_, &(block, sp)) in self.map.iter() {
-            if self.current_block == block {
-                self.cx.span_lint(DROP_VIOLATION, b.span, "Drop-protected variable was implicitly dropped at the end of this block");
-                if self.cx.current_level(DROP_VIOLATION) != Level::Allow {
-                    self.cx.tcx.sess.span_note(sp, "Variable declared here")
+
+        if let Some(ref e) = b.expr {
+            debug!("visit_block: expr is {:?}\n", e);
+            let ty = ty::expr_ty(self.cx.tcx, e);
+            if self.is_protected(ty) {
+                // This value is returned, and thus we can consume it
+                visit::walk_expr(self, e);
+            }
+        }
+    }
+}
+
+fn expr_to_localid<'tcx>(tcx: &'tcx ctxt, expr: &Expr) -> Option<NodeId> {
+    let def = tcx.def_map.borrow().get(&expr.id).map(|&v| v);
+    if let Some(PathResolution { base_def: DefLocal(id), .. }) = def {
+        Some(id)
+    } else {
+        None
+    }
+}
+
+fn can_drop<'tcx>(tcx: &'tcx ctxt, attrs: &[Attribute], id: &NodeId) -> bool {
+    let node_ty = ty::node_id_to_type(tcx, *id);
+    for attr in attrs {
+        if let MetaList(ref intstr, ref v) = attr.node.value.node {
+            if *intstr == "allow_drop" {
+                for drop in v {
+                    if let MetaWord(ref dropstr) = drop.node {
+                        if *dropstr == &node_ty.repr(tcx)[..] {
+                            return true;
+                        }
+                    }
                 }
             }
         }
-        self.current_block = old_id;
     }
 
+    false
 }
 
-fn is_protected<'tcx>(cx: &ctxt<'tcx>, expr: &Expr) -> bool {
-    let ty = ty::expr_ty(cx, expr);
-    let mut protected = false;
-    ty::walk_ty(ty, |t| {
-        match t.sty {
-            ty::ty_enum(did, _) | ty::ty_struct(did, _) => {
-                if ty::has_attr(cx, did, "drop_protection") {
-                    protected = true;
-                    return;
-                }
-            }
-            _ => ()
-        }
-    });
-    protected
-}
-
-
-// Copied from
-// https://github.com/rust-lang/rust/pull/22348/files#diff-d6c1a78a970f7c6174f36c924862b879R813
-// Thanks to @huon
-// Get the attributes of a definition, returning `None` if `did`
-// refers to nothing or something that cannot have attributes.
-pub fn get_attrs_opt<'tcx>(tcx: &'tcx ctxt, did: DefId)
-                           -> Option<Cow<'tcx, [Attribute]>>
-{
-    let attrs: Cow<'tcx, [Attribute]> = if is_local(did) {
-        match tcx.map.find(did.node) {
-            Some(ast_map::NodeItem(item)) => Cow::Borrowed(&item.attrs),
-            Some(ast_map::NodeForeignItem(item)) => Cow::Borrowed(&item.attrs),
-            Some(ast_map::NodeTraitItem(item)) => match *item {
-                RequiredMethod(ref ty_meth) => Cow::Borrowed(&ty_meth.attrs),
-                ProvidedMethod(ref meth) => Cow::Borrowed(&meth.attrs),
-                TypeTraitItem(ref ty) => Cow::Borrowed(&ty.attrs),
-            },
-            Some(ast_map::NodeImplItem(item)) => match *item {
-                MethodImplItem(ref meth) => Cow::Borrowed(&meth.attrs),
-                TypeImplItem(ref ty) => Cow::Borrowed(&ty.attrs),
-            },
-            Some(ast_map::NodeVariant(variant)) => Cow::Borrowed(&variant.node.attrs),
-            _ => return None
-        }
-    } else {
-        Cow::Owned(csearch::get_item_attrs(&tcx.sess.cstore, did))
-    };
-    Some(attrs)
+#[plugin_registrar]
+pub fn plugin_registrar(reg: &mut Registry) {
+    reg.register_lint_pass(box Pass as LintPassObject);
 }

@@ -1,72 +1,38 @@
 #![feature(plugin)]
 #![feature(custom_attribute)]
 #![plugin(humpty_dumpty)]
+#![allow(unused_attributes)]
+#![allow(unused_variables)]
+#![allow(dead_code)]
 
-#![allow(unused)]
-
-#![warn(drop_violation)]
-
-fn main() {
-    // These should not warn
-    let x = 1u8;
-    let mut y = 2u8;
-    y = x;
-    {
-        let mut w = Baz(1);
-        let z = Bar;
-        w = Bar;
-        let properly_dropped = Bar;
-        not_allowed(w);
-        allowed(z);
-        drop_properly(properly_dropped);
-        // should error here about w/z not being dropped properly
-    }
-
-    {
-        let w = Bar;
-        let properly_dropped = Bar;
-        let z = Bar;
-
-        w.not_allowed();
-        properly_dropped.proper_drop();
-        z.allowed();
-    }
-}
-
-use Foo::*;
-
-#[drop_protection]
-enum Foo {
-    Bar, Baz(u8)
-}
+#[drop_protect]
+struct Foo;
 
 impl Foo {
-    fn not_allowed(self) {
-
+    fn something(self) -> Self {
+        self
     }
 
-    #[allowed_on_protected]
-    fn allowed(self) {
-
-    }
-
-    #[allowed_drop]
-    fn proper_drop(self) {
-
+    fn dropit(self) {
+        // Should err
     }
 }
 
+// Should not warn, since we're not dropping anything
+fn id<T>(x: T) -> T {
+    x
+}
 
-fn not_allowed(_: Foo) {
+// Should not warn
+#[allow_drop(Foo)]
+fn close(_: Foo) {
 
 }
 
-#[allowed_on_protected]
-fn allowed(_: Foo) {
-
-}
-
-#[allowed_drop]
-fn drop_properly(_: Foo) {
-
+fn main() {
+    let mut x = Foo;
+    x = x;
+    let y = id(x);
+    let z = y.something();
+    close(z);
 }
