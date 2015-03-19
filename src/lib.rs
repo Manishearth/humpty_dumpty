@@ -312,6 +312,7 @@ fn expr_to_localid<'tcx>(tcx: &'tcx ctxt, expr: &Expr) -> Option<NodeId> {
 fn can_drop<'tcx>(tcx: &'tcx ctxt, attrs: &[Attribute], id: &NodeId) -> bool {
     let node_ty = ty::node_id_to_type(tcx, *id);
     for attr in attrs {
+        // #[allow_drop(Foo, Bar, Baz)]
         if let MetaList(ref intstr, ref v) = attr.node.value.node {
             if *intstr == "allow_drop" {
                 for drop in v {
@@ -319,6 +320,17 @@ fn can_drop<'tcx>(tcx: &'tcx ctxt, attrs: &[Attribute], id: &NodeId) -> bool {
                         if *dropstr == &node_ty.repr(tcx)[..] {
                             return true;
                         }
+                    }
+                }
+            }
+        }
+
+        // #[allow_drop = "Foo<Bar, Baz>"]
+        if let MetaNameValue(ref intstr, ref lit) = attr.node.value.node {
+            if *intstr == "allow_drop" {
+                if let LitStr(ref dropstr, _) = lit.node {
+                    if *dropstr == &node_ty.repr(tcx)[..] {
+                        return true;
                     }
                 }
             }
