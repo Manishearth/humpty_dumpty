@@ -24,7 +24,7 @@ fn id<T>(x: T) -> T {
 }
 
 // Should not warn
-#[allow_drop(Foo)]
+#[allow_drop="Foo"]
 fn close(_: Foo) {
 
 }

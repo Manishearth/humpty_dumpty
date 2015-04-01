@@ -9,7 +9,7 @@
 struct Foo;
 
 impl Foo {
-    #[allow_drop(Foo)]
+    #[allow_drop="Foo"]
     fn close(self) { }
 }
 
