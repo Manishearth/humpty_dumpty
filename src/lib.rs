@@ -152,7 +152,7 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for MyVisitor<'a, 'tcx, 'b> {
 
                 // Get the defid
                 let defid = if let ExprPath(_, _) = lhs.node {
-                    expr_to_localid(self.cx.tcx, lhs).unwrap()
+                    expr_to_deflocal(self.cx.tcx, lhs).unwrap()
                 } else {
                     unimplemented!()
                 };
@@ -168,7 +168,7 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for MyVisitor<'a, 'tcx, 'b> {
                 // If the path is a local id that's in our map and it is getting
                 // moved, remove it from self.map. If we got this far, it is a
                 // move
-                if let Some(id) = expr_to_localid(self.cx.tcx, e) {
+                if let Some(id) = expr_to_deflocal(self.cx.tcx, e) {
                     debug!("Trying to find id: {:?}\n", id);
                     if self.map.contains_key(&id) {
                         self.cx.tcx.sess.span_note(e.span, "Consuming protected var");
@@ -300,7 +300,7 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for MyVisitor<'a, 'tcx, 'b> {
     }
 }
 
-fn expr_to_localid<'tcx>(tcx: &'tcx ctxt, expr: &Expr) -> Option<NodeId> {
+fn expr_to_deflocal<'tcx>(tcx: &'tcx ctxt, expr: &Expr) -> Option<NodeId> {
     let def = tcx.def_map.borrow().get(&expr.id).map(|&v| v);
     if let Some(PathResolution { base_def: DefLocal(id), .. }) = def {
         Some(id)
