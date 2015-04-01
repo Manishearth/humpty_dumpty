@@ -118,6 +118,17 @@ impl <'a, 'tcx, 'b> MyVisitor<'a, 'tcx, 'b> {
                     self.cx.tcx.sess.span_note(p.span, &format!("Adding drop protected type to map. Id: {:?}", p.id));
                     self.map.insert(p.id, p.span);
                 }
+            } else if let PatWild(_) = p.node {
+                let ty = ty::pat_ty(self.cx.tcx, p);
+                let mut protected = false;
+                ty::walk_ty(ty, |t| {
+                    if self.is_protected(t) {
+                        protected = true;
+                    }
+                });
+                if protected && !self.can_drop(&pat.id) {
+                    self.cx.tcx.sess.span_err(p.span, "Protected type is dropped");
+                }
             }
             true
         });
