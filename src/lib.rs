@@ -1,4 +1,4 @@
-#![feature(plugin_registrar, quote, plugin, box_syntax, rustc_private)]
+#![feature(plugin_registrar, quote, plugin, box_syntax, rustc_private, slice_patterns)]
 
 #![allow(missing_copy_implementations, unused)]
 
