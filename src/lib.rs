@@ -49,10 +49,12 @@ impl LintPass for Pass {
 
         visit::walk_block(&mut visitor, block);
 
-        for var in visitor.map.iter() {
-            // TODO: prettify
-            if !visitor.can_drop(var.0) {
-                cx.tcx.sess.span_err(*var.1, "dropped var");
+        if !visitor.diverging {
+            for var in visitor.map.iter() {
+                // TODO: prettify
+                if !visitor.can_drop(var.0) {
+                    cx.tcx.sess.span_err(*var.1, "dropped var");
+                }
             }
         }
     }
@@ -63,7 +65,7 @@ struct MyVisitor<'a : 'b, 'tcx : 'a, 'b> {
     // Type context, with all the goodies
     map: NodeMap<Span>, // (blockid and span for declaration)
     cx: &'b Context<'a, 'tcx>,
-    has_safely_returned: bool,
+    diverging: bool,
     attrs: &'tcx [Attribute],
 }
 
@@ -72,7 +74,7 @@ impl <'a, 'tcx, 'b> MyVisitor<'a, 'tcx, 'b> {
         let map = FnvHashMap();
         let visitor = MyVisitor { cx: cx,
                                   map: map,
-                                  has_safely_returned: false,
+                                  diverging: false,
                                   attrs: attrs,
         };
         visitor
@@ -164,13 +166,15 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for MyVisitor<'a, 'tcx, 'b> {
     }
 
     fn visit_stmt(&mut self, s: &'v Stmt) {
-        if let StmtSemi(ref e, id) = s.node {
-            let ty = ty::expr_ty(self.cx.tcx, e);
-            if self.is_protected(ty) {
-                self.cx.tcx.sess.span_err(s.span, "Return type is protected but unused");
+        if !self.diverging {
+            if let StmtSemi(ref e, id) = s.node {
+                let ty = ty::expr_ty(self.cx.tcx, e);
+                if self.is_protected(ty) {
+                    self.cx.tcx.sess.span_err(s.span, "Return type is protected but unused");
+                }
             }
+            visit::walk_stmt(self, s);
         }
-        visit::walk_stmt(self, s);
     }
 
     fn visit_expr(&mut self, e: &'v Expr) {
@@ -178,6 +182,9 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for MyVisitor<'a, 'tcx, 'b> {
         // Which Exprs do we need to handle?
         // At least ExprCall and ExprMethodCall
         debug!("visit_expr: {:?}\n", e);
+        if self.diverging {
+            return              // Don't proceed
+        }
         match e.node {
             ExprAssign(ref lhs, ref rhs) => {
                 // Remove all protected vars in rhs
@@ -225,30 +232,54 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for MyVisitor<'a, 'tcx, 'b> {
                 // Consume stuff in expr
                 self.visit_expr(&e1);
 
-                // visit block(s)
-                if let &Some(ref e2) = else_block {
-                    // The resulting hms should be the same
-                    let mut v1 = self.clone();
-                    let mut v2 = self.clone();
-                    v1.visit_block(&b);
-                    v2.visit_expr(&e2);
-                    if v1.map != v2.map {
-                        self.cx.tcx.sess.span_err(e.span, "Branch arms are not linear");
+                // For convenience, we first check the else block, and set the
+                // outhm to test against:
+                let outhm = if let &Some(ref e2) = else_block {
+                    let mut v = self.clone();
+                    v.visit_expr(e2);
+                    if !v.diverging {
+                        // The block was not diverging, so outhm should be the resulting map
+                        Some(v.map)
+                    } else {
+                        // The result block was diverging, so the if block can return anything
+                        None
                     }
-                    self.map = v1.map;
                 } else {
-                    // The resulting hm should be the same as before
-                    let mut v1 = self.clone();
-                    v1.visit_block(&b);
-                    if self.map != v1.map {
-                        self.cx.tcx.sess.span_err(e.span, "If branch is not linear");
-                    }
-                    // Is this necessary?
-                    // self.map = v1.map;
-                }
+                    // There's no else-block, but an empty else block is the
+                    // same, and thus the hash-map has to be the same as the one
+                    // from the start
+                    Some(self.map.clone())
+                };
 
-                // Make sure the returned hash map is the same as the one before
-                let v1 = self.clone();
+                let mut v = self.clone();
+                v.visit_block(&b);
+
+                // Update the outgoing hm.
+                if v.diverging {
+                    if let Some(map) = outhm {
+                        // Hvis den første ikke divergede skal map sættes til outhm
+                        self.map = map;
+                    } else {
+                        // Ellers diverger begge branches
+                        self.diverging = true;
+                    }
+                } else {
+                    match outhm {
+                        Some(map) => {
+                            if v.map == map {
+                                // Hvis outhm er noget, og den er ens med v.map er alt godt
+                                self.map = map;
+                            } else {
+                                // Ellers er der fejl
+                                self.cx.tcx.sess.span_err(e.span, "Branch arms are not linear");
+                            }
+                        },
+                        None => {
+                            // Hvis outhm er none, er alt også godt
+                            self.map = v.map;
+                        },
+                    }
+                }
             }
             ExprMatch(ref e1, ref arms, ref source) => {
                 // Consume stuff in e
@@ -286,19 +317,41 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for MyVisitor<'a, 'tcx, 'b> {
                     for arm in arms {
                         let mut v = self.clone();
                         v.visit_arm(&arm);
-                        if let Some(tmp) = old {
-                            if tmp.map != v.map {
-                                self.cx.tcx.sess.span_err(e.span, "Match arms are not linear");
+                        if !v.diverging {
+                            if let Some(tmp) = old {
+                                if tmp.map != v.map {
+                                    self.cx.tcx.sess.span_err(e.span, "Match arms are not linear");
+                                }
                             }
+                            old = Some(v);
                         }
-                        old = Some(v);
                     }
                     if let Some(new) = old {
                         self.map = new.map
+                    } else {
+                        // Everything is diverging?
+                        self.diverging = true;
                     }
                 }
             }
-            // TODO: We need to do something about while loops, breaks, returns.
+            ExprRet(ref e1) => {
+                // If there is a return value, consume it
+                if let &Some(ref ret) = e1 {
+                    self.visit_expr(ret);
+                }
+
+                // Check that the hm is empty
+                for var in self.map.iter() {
+                    // TODO: prettify
+                    if !self.can_drop(var.0) {
+                        self.cx.tcx.sess.span_err(*var.1, "dropped var");
+                    }
+                }
+
+                // Set the flag, indicating that we've returned
+                self.diverging = true;
+            }
+            // todo: We need to do something about while loops, breaks, returns.
             _ => visit::walk_expr(self, e),
         }
     }
@@ -322,12 +375,14 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for MyVisitor<'a, 'tcx, 'b> {
         debug!("visit_block: stmts: {:?}\n", b.stmts);
         visit::walk_block(self, b);
 
-        if let Some(ref e) = b.expr {
-            debug!("visit_block: expr is {:?}\n", e);
-            let ty = ty::expr_ty(self.cx.tcx, e);
-            if self.is_protected(ty) {
-                // This value is returned, and thus we can consume it
-                visit::walk_expr(self, e);
+        if !self.diverging {
+            if let Some(ref e) = b.expr {
+                debug!("visit_block: expr is {:?}\n", e);
+                let ty = ty::expr_ty(self.cx.tcx, e);
+                if self.is_protected(ty) {
+                    // This value is returned, and thus we can consume it
+                    visit::walk_expr(self, e);
+                }
             }
         }
     }
