@@ -78,3 +78,28 @@ fn if_else() {
     f.close();
     return;
 }
+
+
+#[test]
+fn if_return1() {
+    let foo = Foo;
+
+    if true {
+        foo.close();
+        return;
+    } else {
+    }
+    foo.close();
+}
+
+
+#[test]
+fn if_return2() {
+    let foo = Foo;
+
+    if true {
+        foo.close();
+        return;
+    }
+    foo.close();
+}

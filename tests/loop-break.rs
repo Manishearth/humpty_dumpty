@@ -85,3 +85,18 @@ fn loop_if_break_else_break() {
         }
     }
 }
+
+#[test]
+fn loop_if_break_else_break2() {
+    let foo = Foo;
+
+    loop {
+        if true {
+            foo.close();
+            break;
+        } else {
+        }
+        foo.close();
+        break;
+    }
+}
