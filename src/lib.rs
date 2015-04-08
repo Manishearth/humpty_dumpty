@@ -67,6 +67,8 @@ struct MyVisitor<'a : 'b, 'tcx : 'a, 'b> {
     cx: &'b Context<'a, 'tcx>,
     diverging: bool,
     attrs: &'tcx [Attribute],
+    breaking: bool,
+    loopout: Option<NodeMap<Span>>,
 }
 
 impl <'a, 'tcx, 'b> MyVisitor<'a, 'tcx, 'b> {
@@ -76,6 +78,8 @@ impl <'a, 'tcx, 'b> MyVisitor<'a, 'tcx, 'b> {
                                   map: map,
                                   diverging: false,
                                   attrs: attrs,
+                                  breaking: false,
+                                  loopout: None
         };
         visitor
     }
@@ -135,6 +139,16 @@ impl <'a, 'tcx, 'b> MyVisitor<'a, 'tcx, 'b> {
             true
         });
     }
+
+    fn update_loopout(&mut self, e: &Expr, loopout: &Option<NodeMap<Span>>) {
+        if self.loopout.is_some() {
+            if &self.loopout != loopout {
+                self.cx.tcx.sess.span_err(e.span, "Diverging loopout");
+            }
+        } else {
+            self.loopout = loopout.clone();
+        }
+    }
 }
 
 impl<'a, 'b, 'tcx, 'v> Visitor<'v> for MyVisitor<'a, 'tcx, 'b> {
@@ -182,7 +196,7 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for MyVisitor<'a, 'tcx, 'b> {
         // Which Exprs do we need to handle?
         // At least ExprCall and ExprMethodCall
         debug!("visit_expr: {:?}\n", e);
-        if self.diverging {
+        if self.diverging || self.breaking {
             return              // Don't proceed
         }
         match e.node {
@@ -228,57 +242,51 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for MyVisitor<'a, 'tcx, 'b> {
                     self.visit_expr(&e1);
                 }
             }
-            ExprIf(ref e1, ref b, ref else_block) => {
-                // Consume stuff in expr
-                self.visit_expr(&e1);
 
-                // For convenience, we first check the else block, and set the
-                // outhm to test against:
-                let outhm = if let &Some(ref e2) = else_block {
-                    let mut v = self.clone();
-                    v.visit_expr(e2);
-                    if !v.diverging {
-                        // The block was not diverging, so outhm should be the resulting map
-                        Some(v.map)
-                    } else {
-                        // The result block was diverging, so the if block can return anything
-                        None
-                    }
-                } else {
-                    // There's no else-block, but an empty else block is the
-                    // same, and thus the hash-map has to be the same as the one
-                    // from the start
-                    Some(self.map.clone())
-                };
+            ExprIf(ref e1, ref if_block, ref else_expr) => {
+                // Walk each of the arms, and check that outcoming hms are
+                // identical
+                let mut old: Option<Self> = None;
 
                 let mut v = self.clone();
-                v.visit_block(&b);
+                v.visit_block(&if_block);
+                if !v.diverging {
+                    self.update_loopout(e, &v.loopout);
 
-                // Update the outgoing hm.
-                if v.diverging {
-                    if let Some(map) = outhm {
-                        // Hvis den første ikke divergede skal map sættes til outhm
-                        self.map = map;
-                    } else {
-                        // Ellers diverger begge branches
-                        self.diverging = true;
+                    if let Some(tmp) = old {
+                        if !tmp.breaking {
+                            v.breaking = false;
+                        }
+                        if tmp.map != v.map {
+                            self.cx.tcx.sess.span_err(e.span, "Match arms are not linear");
+                        }
                     }
-                } else {
-                    match outhm {
-                        Some(map) => {
-                            if v.map == map {
-                                // Hvis outhm er noget, og den er ens med v.map er alt godt
-                                self.map = map;
-                            } else {
-                                // Ellers er der fejl
-                                self.cx.tcx.sess.span_err(e.span, "Branch arms are not linear");
+                    old = Some(v);
+                }
+
+                if let &Some(ref else_expr) = else_expr {
+                    let mut v = self.clone();
+                    v.visit_expr(&else_expr);
+                    if !v.diverging {
+                        self.update_loopout(e, &v.loopout);
+                        if let Some(tmp) = old {
+                            if !tmp.breaking {
+                                v.breaking = false;
                             }
-                        },
-                        None => {
-                            // Hvis outhm er none, er alt også godt
-                            self.map = v.map;
-                        },
+                            if tmp.map != v.map {
+                                self.cx.tcx.sess.span_err(e.span, "Match arms are not linear");
+                            }
+                        }
+                        old = Some(v);
                     }
+                }
+
+                if let Some(old) = old {
+                    self.map = old.map;
+                    self.breaking = old.breaking;
+                } else {
+                    // Everything is diverging?
+                    self.diverging = true;
                 }
             }
             ExprMatch(ref e1, ref arms, ref source) => {
@@ -304,7 +312,15 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for MyVisitor<'a, 'tcx, 'b> {
                                 is_for_loop = true;
                                 // Skip pattern in outermost arm, just visit the body
                                 // TODO: Guards
-                                self.visit_expr(body);
+                                let mut tmp = self.clone();
+                                tmp.visit_expr(body);
+                                if !tmp.diverging {
+                                    self.breaking = tmp.breaking;
+                                    self.loopout = tmp.loopout;
+                                    self.map = tmp.map;
+                                } else {
+                                    self.diverging = true;
+                                }
                             }
                         }
                     }
@@ -318,7 +334,11 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for MyVisitor<'a, 'tcx, 'b> {
                         let mut v = self.clone();
                         v.visit_arm(&arm);
                         if !v.diverging {
+                            self.update_loopout(e, &v.loopout);
                             if let Some(tmp) = old {
+                                if !tmp.breaking {
+                                    v.breaking = false;
+                                }
                                 if tmp.map != v.map {
                                     self.cx.tcx.sess.span_err(e.span, "Match arms are not linear");
                                 }
@@ -326,10 +346,12 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for MyVisitor<'a, 'tcx, 'b> {
                             old = Some(v);
                         }
                     }
-                    if let Some(new) = old {
-                        self.map = new.map
+
+                    if let Some(old) = old {
+                        self.map = old.map;
+                        self.breaking = old.breaking;
                     } else {
-                        // Everything is diverging?
+                        // Everything is diverging
                         self.diverging = true;
                     }
                 }
@@ -351,7 +373,44 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for MyVisitor<'a, 'tcx, 'b> {
                 // Set the flag, indicating that we've returned
                 self.diverging = true;
             }
-            // todo: We need to do something about while loops, breaks, returns.
+            ExprLoop(ref body, label) => {
+                let mut tmp = self.clone();
+                tmp.visit_block(body);
+                if !tmp.diverging {
+                    if let Some(outgoing) = tmp.loopout {
+                        if outgoing == tmp.map {
+                            self.map = tmp.map;
+                        } else {
+                            self.cx.tcx.sess.span_err(e.span, "Diverging loop");
+                        }
+                    } else {
+                        self.map = tmp.map
+                    }
+                } else {
+                    self.diverging = true;
+                }
+            }
+            ExprWhile(_, _, _) => {
+                unimplemented!();
+            }
+            ExprBreak(label) => {
+                if label.is_some() {
+                    unimplemented!();
+                }
+                if let Some(ref outgoing) = self.loopout {
+                    if &self.map == outgoing {
+                        // All good
+                    } else {
+                        self.cx.tcx.sess.span_err(e.span, "Diverging break");
+                    }
+                } else {
+                    self.breaking = true;
+                    self.loopout = Some(self.map.clone());
+                }
+            }
+            ExprAgain(ref ident) => {
+                unimplemented!();
+            }
             _ => visit::walk_expr(self, e),
         }
     }
