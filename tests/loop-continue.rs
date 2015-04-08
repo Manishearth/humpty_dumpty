@@ -18,7 +18,7 @@ fn loop_continue1() {
     let foo = Foo;
 
     loop {
-        if true {
+        if false {
             continue;
         } else {
             foo.close();
@@ -33,7 +33,7 @@ fn loop_continue2() {
     let foo = Foo;
 
     loop {
-        if true {
+        if false {
             continue;
         } else {
             foo.close();
@@ -47,7 +47,7 @@ fn loop_continue3() {
     let foo = Foo;
 
     loop {
-        if true {
+        if false {
             continue;
         } else {
         }
@@ -61,7 +61,7 @@ fn loop_continue4() {
     let foo = Foo;
 
     loop {
-        if true {
+        if false {
             continue;
         }
         foo.close();
