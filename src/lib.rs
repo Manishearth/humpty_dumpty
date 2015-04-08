@@ -68,6 +68,7 @@ struct MyVisitor<'a : 'b, 'tcx : 'a, 'b> {
     diverging: bool,
     attrs: &'tcx [Attribute],
     breaking: bool,
+    loopin: Option<NodeMap<Span>>,
     loopout: Option<NodeMap<Span>>,
 }
 
@@ -79,6 +80,7 @@ impl <'a, 'tcx, 'b> MyVisitor<'a, 'tcx, 'b> {
                                   diverging: false,
                                   attrs: attrs,
                                   breaking: false,
+                                  loopin: None,
                                   loopout: None
         };
         visitor
@@ -256,10 +258,13 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for MyVisitor<'a, 'tcx, 'b> {
                     if let Some(tmp) = old {
                         if !tmp.breaking {
                             v.breaking = false;
+                            if tmp.map != v.map {
+                                self.cx.tcx.sess.span_err(e.span, "Match arms are not linear");
+                            }
                         }
-                        if tmp.map != v.map {
-                            self.cx.tcx.sess.span_err(e.span, "Match arms are not linear");
-                        }
+                    }
+                    if else_expr.is_none() {
+                        v.breaking = false;
                     }
                     old = Some(v);
                 }
@@ -269,12 +274,12 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for MyVisitor<'a, 'tcx, 'b> {
                     v.visit_expr(&else_expr);
                     if !v.diverging {
                         self.update_loopout(e, &v.loopout);
-                        if let Some(tmp) = old {
+                        if let &Some(ref tmp) = &old {
                             if !tmp.breaking {
                                 v.breaking = false;
-                            }
-                            if tmp.map != v.map {
-                                self.cx.tcx.sess.span_err(e.span, "Match arms are not linear");
+                                if tmp.map != v.map {
+                                    self.cx.tcx.sess.span_err(e.span, "If branches are not linear");
+                                }
                             }
                         }
                         old = Some(v);
@@ -375,6 +380,7 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for MyVisitor<'a, 'tcx, 'b> {
             }
             ExprLoop(ref body, label) => {
                 let mut tmp = self.clone();
+                tmp.loopin = Some(self.map.clone());
                 tmp.visit_block(body);
                 if !tmp.diverging {
                     if let Some(outgoing) = tmp.loopout {
@@ -408,8 +414,20 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for MyVisitor<'a, 'tcx, 'b> {
                     self.loopout = Some(self.map.clone());
                 }
             }
-            ExprAgain(ref ident) => {
-                unimplemented!();
+            ExprAgain(ref label) => {
+                if label.is_some() {
+                    unimplemented!();
+                }
+                self.breaking = true;
+                if let Some(ref incoming) = self.loopin {
+                    if &self.map == incoming {
+                        // All good
+                    } else {
+                        self.cx.tcx.sess.span_err(e.span, "Diverging continue");
+                    }
+                } else {
+                    unreachable!();
+                }
             }
             _ => visit::walk_expr(self, e),
         }
