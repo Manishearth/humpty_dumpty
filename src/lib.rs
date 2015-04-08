@@ -1,4 +1,4 @@
-#![feature(plugin_registrar, quote, plugin, box_syntax, rustc_private)]
+#![feature(plugin_registrar, quote, plugin, box_syntax, rustc_private, slice_patterns)]
 
 #![allow(missing_copy_implementations, unused)]
 
@@ -341,7 +341,6 @@ fn expr_to_deflocal<'tcx>(tcx: &'tcx ctxt, expr: &Expr) -> Option<NodeId> {
         None
     }
 }
-
 
 #[plugin_registrar]
 pub fn plugin_registrar(reg: &mut Registry) {
