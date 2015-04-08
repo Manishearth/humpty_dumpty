@@ -7,3 +7,6 @@ authors = ["Manish Goregaokar <manishsmail@gmail.com>"]
 [lib]
 name = "humpty_dumpty"
 crate_type = ["dylib"]
+
+[dev-dependencies.compiletest]
+git = "https://github.com/laumann/compiletest-rs.git"
