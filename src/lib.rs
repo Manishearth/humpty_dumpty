@@ -42,7 +42,7 @@ impl LintPass for Pass {
     fn check_fn(&mut self, cx: &Context, _: visit::FnKind, decl: &FnDecl, block: &Block, span: Span, id: NodeId) {
         // Walk the arguments and add them to the map
         let attrs = cx.tcx.map.attrs(id);
-        let mut visitor = MyVisitor::new(cx, block.id, attrs);
+        let mut visitor = LinearVisitor::new(cx, block.id, attrs);
         for arg in decl.inputs.iter() {
             visitor.walk_pat_and_add(&arg.pat);
         }
@@ -61,7 +61,7 @@ impl LintPass for Pass {
 }
 
 #[derive(Clone)]
-struct MyVisitor<'a : 'b, 'tcx : 'a, 'b> {
+struct LinearVisitor<'a : 'b, 'tcx : 'a, 'b> {
     // Type context, with all the goodies
     map: NodeMap<Span>, // (blockid and span for declaration)
     cx: &'b Context<'a, 'tcx>,
@@ -72,10 +72,10 @@ struct MyVisitor<'a : 'b, 'tcx : 'a, 'b> {
     loopout: Option<NodeMap<Span>>,
 }
 
-impl <'a, 'tcx, 'b> MyVisitor<'a, 'tcx, 'b> {
+impl <'a, 'tcx, 'b> LinearVisitor<'a, 'tcx, 'b> {
     fn new(cx: &'b Context<'a, 'tcx>, id: NodeId, attrs: &'tcx [Attribute]) -> Self {
         let map = FnvHashMap();
-        let visitor = MyVisitor { cx: cx,
+        let visitor = LinearVisitor { cx: cx,
                                   map: map,
                                   diverging: false,
                                   attrs: attrs,
@@ -153,7 +153,7 @@ impl <'a, 'tcx, 'b> MyVisitor<'a, 'tcx, 'b> {
     }
 }
 
-impl<'a, 'b, 'tcx, 'v> Visitor<'v> for MyVisitor<'a, 'tcx, 'b> {
+impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
     fn visit_decl(&mut self, d: &'v Decl) {
         // If d is local and if d.ty is protected:
         //  - First handle the initializer: We need to remove any used variables that are moved
