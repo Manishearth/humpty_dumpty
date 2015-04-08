@@ -63,7 +63,6 @@ struct MyVisitor<'a : 'b, 'tcx : 'a, 'b> {
     // Type context, with all the goodies
     map: NodeMap<Span>, // (blockid and span for declaration)
     cx: &'b Context<'a, 'tcx>,
-    has_safely_returned: bool,
     attrs: &'tcx [Attribute],
 }
 
@@ -72,7 +71,6 @@ impl <'a, 'tcx, 'b> MyVisitor<'a, 'tcx, 'b> {
         let map = FnvHashMap();
         let visitor = MyVisitor { cx: cx,
                                   map: map,
-                                  has_safely_returned: false,
                                   attrs: attrs,
         };
         visitor
