@@ -8,12 +8,17 @@
 #[drop_protect]
 struct Foo;
 
-impl Foo {
-    #[allow_drop="Foo"]
+unsafe trait Closeable {
+    fn close(self);
+}
+
+unsafe impl Closeable for Vec<Foo> {
+    #[allow_drop="collections::vec::Vec<Foo>"]
     fn close(self) { }
 }
 
+
 fn main() {
-    let x = Foo;
-    x.close();
+    let v: Vec<Foo> = Vec::new();
+    v.close();
 }

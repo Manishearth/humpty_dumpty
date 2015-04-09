@@ -8,7 +8,7 @@
 #[drop_protect]
 struct Foo;
 
-#[allow_drop(Foo)]
+#[allow_drop="Foo"]
 fn close(x: Foo) { }
 
 fn main() {

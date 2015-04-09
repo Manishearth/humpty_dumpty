@@ -41,17 +41,17 @@ impl LintPass for Pass {
 
     fn check_fn(&mut self, cx: &Context, _: visit::FnKind, decl: &FnDecl, block: &Block, span: Span, id: NodeId) {
         // Walk the arguments and add them to the map
-        let mut visitor = MyVisitor::new(cx, block.id);
+        let attrs = cx.tcx.map.attrs(id);
+        let mut visitor = MyVisitor::new(cx, block.id, attrs);
         for arg in decl.inputs.iter() {
             visitor.walk_pat_and_add(&arg.pat);
         }
 
         visit::walk_block(&mut visitor, block);
 
-        let attrs = cx.tcx.map.attrs(id);
         for var in visitor.map.iter() {
             // TODO: prettify
-            if !can_drop(cx.tcx, attrs, var.0) {
+            if !visitor.can_drop(var.0) {
                 cx.tcx.sess.span_err(*var.1, "dropped var");
             }
         }
@@ -63,13 +63,15 @@ struct MyVisitor<'a : 'b, 'tcx : 'a, 'b> {
     // Type context, with all the goodies
     map: NodeMap<Span>, // (blockid and span for declaration)
     cx: &'b Context<'a, 'tcx>,
+    attrs: &'tcx [Attribute],
 }
 
 impl <'a, 'tcx, 'b> MyVisitor<'a, 'tcx, 'b> {
-    fn new(cx: &'b Context<'a, 'tcx>, id: NodeId) -> Self {
+    fn new(cx: &'b Context<'a, 'tcx>, id: NodeId, attrs: &'tcx [Attribute]) -> Self {
         let map = FnvHashMap();
         let visitor = MyVisitor { cx: cx,
                                   map: map,
+                                  attrs: attrs,
         };
         visitor
     }
@@ -80,6 +82,24 @@ impl <'a, 'tcx, 'b> MyVisitor<'a, 'tcx, 'b> {
                 if ty::has_attr(self.cx.tcx, did, "drop_protect") => true,
             _ => false,
         }
+    }
+
+    fn can_drop(&self, id: &NodeId) -> bool {
+        let tcx = self.cx.tcx;
+        let node_ty = ty::node_id_to_type(tcx, *id);
+        for attr in self.attrs {
+            if let MetaNameValue(ref intstr, ref lit) = attr.node.value.node {
+                if *intstr == "allow_drop" {
+                    if let LitStr(ref litstr, _) = lit.node {
+                        if *litstr == &node_ty.repr(tcx)[..] {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+
+        false
     }
 
     fn walk_pat_and_add(&mut self, pat: &Pat) {
@@ -95,6 +115,17 @@ impl <'a, 'tcx, 'b> MyVisitor<'a, 'tcx, 'b> {
                 if protected {
                     self.cx.tcx.sess.span_note(p.span, &format!("Adding drop protected type to map. Id: {:?}", p.id));
                     self.map.insert(p.id, p.span);
+                }
+            } else if let PatWild(_) = p.node {
+                let ty = ty::pat_ty(self.cx.tcx, p);
+                let mut protected = false;
+                ty::walk_ty(ty, |t| {
+                    if self.is_protected(t) {
+                        protected = true;
+                    }
+                });
+                if protected && !self.can_drop(&pat.id) {
+                    self.cx.tcx.sess.span_err(p.span, "Protected type is dropped");
                 }
             }
             true
@@ -307,37 +338,6 @@ fn expr_to_deflocal<'tcx>(tcx: &'tcx ctxt, expr: &Expr) -> Option<NodeId> {
     } else {
         None
     }
-}
-
-fn can_drop<'tcx>(tcx: &'tcx ctxt, attrs: &[Attribute], id: &NodeId) -> bool {
-    let node_ty = ty::node_id_to_type(tcx, *id);
-    for attr in attrs {
-        // #[allow_drop(Foo, Bar, Baz)]
-        if let MetaList(ref intstr, ref v) = attr.node.value.node {
-            if *intstr == "allow_drop" {
-                for drop in v {
-                    if let MetaWord(ref dropstr) = drop.node {
-                        if *dropstr == &node_ty.repr(tcx)[..] {
-                            return true;
-                        }
-                    }
-                }
-            }
-        }
-
-        // #[allow_drop = "Foo<Bar, Baz>"]
-        if let MetaNameValue(ref intstr, ref lit) = attr.node.value.node {
-            if *intstr == "allow_drop" {
-                if let LitStr(ref dropstr, _) = lit.node {
-                    if *dropstr == &node_ty.repr(tcx)[..] {
-                        return true;
-                    }
-                }
-            }
-        }
-    }
-
-    false
 }
 
 #[plugin_registrar]

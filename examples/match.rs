@@ -12,12 +12,12 @@ struct Foo;
 struct Bar;
 
 impl Foo {
-    #[allow_drop(Foo)]
+    #[allow_drop="Foo"]
     fn close(self) { }
 }
 
 impl Bar {
-    #[allow_drop(Bar)]
+    #[allow_drop="Bar"]
     fn close(self) { }
 }
 
