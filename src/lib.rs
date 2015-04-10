@@ -116,25 +116,13 @@ impl <'a, 'tcx, 'b> MyVisitor<'a, 'tcx, 'b> {
         ast_util::walk_pat(pat, |p| {
             if let PatIdent(_, _, _) = p.node {
                 let ty = ty::pat_ty(self.cx.tcx, p);
-                let mut protected = false;
-                ty::walk_ty(ty, |t| {
-                    if self.is_protected(t) {
-                        protected = true;
-                    }
-                });
-                if protected {
+                if self.contains_protected(ty) {
                     self.cx.tcx.sess.span_note(p.span, &format!("Adding drop protected type to map. Id: {:?}", p.id));
                     self.map.insert(p.id, p.span);
                 }
             } else if let PatWild(_) = p.node {
                 let ty = ty::pat_ty(self.cx.tcx, p);
-                let mut protected = false;
-                ty::walk_ty(ty, |t| {
-                    if self.is_protected(t) {
-                        protected = true;
-                    }
-                });
-                if protected && !self.can_drop(&pat.id) {
+                if self.contains_protected(ty) && !self.can_drop(&pat.id) {
                     self.cx.tcx.sess.span_err(p.span, "Protected type is dropped");
                 }
             }
@@ -174,7 +162,7 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for MyVisitor<'a, 'tcx, 'b> {
     fn visit_stmt(&mut self, s: &'v Stmt) {
         if let StmtSemi(ref e, id) = s.node {
             let ty = ty::expr_ty(self.cx.tcx, e);
-            if self.is_protected(ty) {
+            if self.contains_protected(ty) {
                 self.cx.tcx.sess.span_err(s.span, "Return type is protected but unused");
             }
         }
@@ -333,7 +321,7 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for MyVisitor<'a, 'tcx, 'b> {
         if let Some(ref e) = b.expr {
             debug!("visit_block: expr is {:?}\n", e);
             let ty = ty::expr_ty(self.cx.tcx, e);
-            if self.is_protected(ty) {
+            if self.contains_protected(ty) {
                 // This value is returned, and thus we can consume it
                 visit::walk_expr(self, e);
             }
