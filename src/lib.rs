@@ -102,6 +102,16 @@ impl <'a, 'tcx, 'b> MyVisitor<'a, 'tcx, 'b> {
         false
     }
 
+    fn contains_protected(&self, ty: ty::Ty<'tcx>) -> bool {
+        let mut protected = false;
+        ty::walk_ty(ty, |t| {
+            if self.is_protected(t) {
+                protected = true;
+            }
+        });
+        protected
+    }
+
     fn walk_pat_and_add(&mut self, pat: &Pat) {
         ast_util::walk_pat(pat, |p| {
             if let PatIdent(_, _, _) = p.node {
