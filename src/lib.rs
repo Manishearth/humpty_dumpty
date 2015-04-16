@@ -280,6 +280,9 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for MyVisitor<'a, 'tcx, 'b> {
                 if !is_for_loop {
                     // Walk each of the arms, and check that outcoming hms are
                     // identical
+                    //
+                    // TODO: Replace with Option<Self> once rust-lang/rust/issues/24227
+                    // is fixed
                     let mut old: Option<MyVisitor<'a, 'tcx, 'b>> = None;
                     for arm in arms {
                         let mut v = self.clone();
