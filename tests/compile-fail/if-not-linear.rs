@@ -25,6 +25,12 @@ fn test2() {
     //~^ ERROR Branch arms are not linear
 }
 
+fn test3() {
+    let f = Foo; //~ ERROR dropped var
+    if true { f.close(); }
+    //~^ ERROR If branch is not linear
+}
+
 fn main() {
     test1();
     test2();
