@@ -31,7 +31,4 @@ fn test3() {
     //~^ ERROR If branch is not linear
 }
 
-fn main() {
-    test1();
-    test2();
-}
+fn main() {}
