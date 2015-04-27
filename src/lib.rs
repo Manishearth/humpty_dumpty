@@ -1,6 +1,6 @@
-#![feature(plugin_registrar, quote, plugin, box_syntax, rustc_private, slice_patterns, collections)]
+#![feature(plugin_registrar, quote, plugin, box_syntax, rustc_private)]
+#![feature(slice_patterns, collections)]
 
-#![allow(missing_copy_implementations, unused)]
 
 #![plugin(syntax)]
 #![plugin(rustc)]
@@ -14,14 +14,11 @@ extern crate rustc;
 #[macro_use]
 extern crate log;
 
-use rustc::lint::{Context, LintPassObject, LintArray, LintPass, Level};
+use rustc::lint::{Context, LintArray, LintPass};
 use rustc::plugin::Registry;
-use rustc::metadata::csearch;
 
 use syntax::ast::*;
-use syntax::ast_map;
 use syntax::ast_util;
-use syntax::ast_util::is_local;
 use syntax::attr::{AttrMetaMethods};
 use rustc::middle::ty::{self, ctxt};
 use rustc::util::ppaux::Repr;
