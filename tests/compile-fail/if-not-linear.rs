@@ -16,17 +16,15 @@ impl Foo {
 fn test1() {
     let f = Foo; //~ ERROR dropped var
     if false { return } else { f.close(); }
-    //~^ ERROR Branch arms are not linear
 }
 
 fn test2() {
-    let f = Foo;
+    let f = Foo; //~ERROR dropped var
     if true { f.close(); } else { return }
-    //~^ ERROR Branch arms are not linear
 }
 
 fn test3() {
-    let f = Foo; //~ ERROR dropped var
+    let f = Foo;
     if true { f.close(); }
     //~^ ERROR If branch is not linear
 }
