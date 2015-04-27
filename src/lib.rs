@@ -248,7 +248,7 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
             ExprIf(ref e1, ref if_block, ref else_expr) => {
                 // Walk each of the arms, and check that outcoming hms are
                 // identical
-                let mut old: Option<Self> = None;
+                let mut old: Option<LinearVisitor> = None;
 
                 let mut v = self.clone();
                 v.visit_block(&if_block);
@@ -334,7 +334,10 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
                 if !is_for_loop {
                     // Walk each of the arms, and check that outcoming hms are
                     // identical
-                    let mut old: Option<Self> = None;
+                    //
+                    // TODO: Replace with Option<Self> once rust-lang/rust/issues/24227
+                    // is fixed
+                    let mut old: Option<LinearVisitor<'a, 'tcx, 'b>> = None;
                     for arm in arms {
                         let mut v = self.clone();
                         v.visit_arm(&arm);
