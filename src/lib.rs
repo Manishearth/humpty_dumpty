@@ -1,4 +1,4 @@
-#![feature(plugin_registrar, quote, plugin, box_syntax, rustc_private, slice_patterns)]
+#![feature(plugin_registrar, quote, plugin, box_syntax, rustc_private, slice_patterns, collections)]
 
 #![allow(missing_copy_implementations, unused)]
 
@@ -129,6 +129,78 @@ impl <'a, 'tcx, 'b> MyVisitor<'a, 'tcx, 'b> {
             true
         });
     }
+
+    fn get_protected(&self, ty: ty::Ty<'tcx>) -> Vec<ty::Ty<'tcx>> {
+        let mut protected = Vec::new();
+        ty::walk_ty(ty, |t| {
+            if self.is_protected(t) {
+                protected.push(t);
+            }
+        });
+        protected
+    }
+
+    /// Searches for ty in ty_
+    fn type_in_type(&self, ty: ty::Ty<'tcx>, ty_: ty::Ty<'tcx>) -> bool {
+        let mut flag = false;
+        ty::walk_ty(ty_, |t| {
+            if ty == t {
+                flag = true
+            }
+        });
+        flag
+    }
+
+    fn remove_returned(&self, mut tys: Vec<ty::Ty<'tcx>>, out: ty::Ty<'tcx>)
+                       -> Vec<ty::Ty<'tcx>>
+    {
+        tys.drain().filter(|t| !self.type_in_type(t, out)).collect()
+    }
+
+    fn can_fn_drop(&self, f: &Expr, ty: ty::Ty<'tcx>) -> bool {
+        let attrs = if self.cx.tcx.is_method_call(f.id) {
+            let did = self.method_defid(f);
+            let item = self.cx.tcx.map.find(did.node);
+
+            ty::get_attrs(self.cx.tcx, did)
+        } else {
+            let def = self.cx.tcx.def_map.borrow().get(&f.id).map(|&v| v);
+            match def {
+                Some(PathResolution { base_def: DefFn(did, _), .. }) |
+                Some(PathResolution { base_def: DefMethod(did, _), ..}) =>
+                    ty::get_attrs(self.cx.tcx, did),
+                _ => {
+                    self.cx.tcx.sess.span_err(f.span, &format!("Cannot handle non-simple function calls, {:?}", self.cx.tcx.is_method_call(f.id)));
+                    unimplemented!()
+                }
+            }
+        };
+
+        for attr in attrs.iter() {
+            if let MetaNameValue(ref intstr, ref lit) = attr.node.value.node {
+                if *intstr == "allow_drop" {
+                    if let LitStr(ref litstr, _) = lit.node {
+                        if *litstr == &ty.repr(self.cx.tcx)[..] {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+
+        false
+    }
+
+    fn method_defid(&self, e: &Expr) -> DefId {
+
+        let borrow = self.cx.tcx.method_map.borrow();
+        let callee = borrow.get(&ty::MethodCall::expr(e.id));
+
+        match callee.unwrap().origin {
+            ty::MethodStatic(did) => did,
+            _ => { unimplemented!() },
+        }
+    }
 }
 
 impl<'a, 'b, 'tcx, 'v> Visitor<'v> for MyVisitor<'a, 'tcx, 'b> {
@@ -206,7 +278,39 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for MyVisitor<'a, 'tcx, 'b> {
                 }
                 visit::walk_expr(self, e);
             }
-            ExprCall(_, _) | ExprMethodCall(_, _, _) => {
+            ExprCall(ref f, ref args) => {
+                // What do?.  If an argument is protected, and none of the output
+                // arguments are, then we lost a protected value somewhere.
+                // So:
+                //  - for each argument, if any of the constituent types are protected
+                //  - check if that type, or a type containing that type is returned
+                //  - otherwise check if function has allow_drop for the argument type (not the protected type)
+                //  - otherwise error
+                let out = ty::expr_ty_adjusted(self.cx.tcx, e);
+                for arg in args {
+                    let ty = ty::expr_ty_adjusted(self.cx.tcx, arg);
+                    let protected = self.remove_returned(self.get_protected(ty), out);
+                    for prot in protected {
+                        if !self.can_fn_drop(f, ty) {
+                            self.cx.tcx.sess.span_err(e.span, "Protected type is not returned from function, and function cannot drop protected type");
+                        }
+                    }
+                }
+
+                visit::walk_expr(self, e);
+            }
+            ExprMethodCall(_, _, ref args) => {
+                let out = ty::expr_ty_adjusted(self.cx.tcx, e);
+
+                for arg in args {
+                    let ty = ty::expr_ty_adjusted(self.cx.tcx, arg);
+                    let protected = self.remove_returned(self.get_protected(ty), out);
+                    for prot in protected {
+                        if !self.can_fn_drop(e, ty) {
+                            self.cx.tcx.sess.span_err(e.span, "Protected type is not returned from function, and function cannot drop protected type");
+                        }
+                    }
+                }
                 visit::walk_expr(self, e);
             }
             ExprAddrOf(_, ref e1) => {
