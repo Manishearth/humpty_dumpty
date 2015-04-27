@@ -1,6 +1,5 @@
-#![feature(plugin_registrar, quote, plugin, box_syntax, rustc_private, slice_patterns)]
-
-#![allow(missing_copy_implementations, unused)]
+#![feature(plugin_registrar, quote, plugin, box_syntax, rustc_private,
+           slice_patterns)]
 
 #![plugin(syntax)]
 #![plugin(rustc)]
@@ -14,14 +13,11 @@ extern crate rustc;
 #[macro_use]
 extern crate log;
 
-use rustc::lint::{Context, LintPassObject, LintArray, LintPass, Level};
+use rustc::lint::{Context, LintArray, LintPass};
 use rustc::plugin::Registry;
-use rustc::metadata::csearch;
 
 use syntax::ast::*;
-use syntax::ast_map;
 use syntax::ast_util;
-use syntax::ast_util::is_local;
 use syntax::attr::{AttrMetaMethods};
 use rustc::middle::ty::{self, ctxt};
 use rustc::util::ppaux::Repr;
@@ -39,7 +35,7 @@ impl LintPass for Pass {
         lint_array!(TEST_LINT)
     }
 
-    fn check_fn(&mut self, cx: &Context, _: visit::FnKind, decl: &FnDecl, block: &Block, span: Span, id: NodeId) {
+    fn check_fn(&mut self, cx: &Context, _: visit::FnKind, decl: &FnDecl, block: &Block, _: Span, id: NodeId) {
         // Walk the arguments and add them to the map
         let attrs = cx.tcx.map.attrs(id);
         let mut visitor = LinearVisitor::new(cx, block.id, attrs);
@@ -73,7 +69,7 @@ struct LinearVisitor<'a : 'b, 'tcx : 'a, 'b> {
 }
 
 impl <'a, 'tcx, 'b> LinearVisitor<'a, 'tcx, 'b> {
-    fn new(cx: &'b Context<'a, 'tcx>, id: NodeId, attrs: &'tcx [Attribute]) -> Self {
+    fn new(cx: &'b Context<'a, 'tcx>, _: NodeId, attrs: &'tcx [Attribute]) -> Self {
         let map = FnvHashMap();
         let visitor = LinearVisitor { cx: cx,
                                   map: map,
@@ -183,7 +179,7 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
 
     fn visit_stmt(&mut self, s: &'v Stmt) {
         if !self.diverging {
-            if let StmtSemi(ref e, id) = s.node {
+            if let StmtSemi(ref e, _) = s.node {
                 let ty = ty::expr_ty(self.cx.tcx, e);
                 if self.is_protected(ty) {
                     self.cx.tcx.sess.span_err(s.span, "Return type is protected but unused");
@@ -245,7 +241,7 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
                 }
             }
 
-            ExprIf(ref e1, ref if_block, ref else_expr) => {
+            ExprIf(_, ref if_block, ref else_expr) => {
                 // Walk each of the arms, and check that outcoming hms are
                 // identical
                 let mut old: Option<LinearVisitor> = None;
@@ -294,7 +290,7 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
                     self.diverging = true;
                 }
             }
-            ExprMatch(ref e1, ref arms, ref source) => {
+            ExprMatch(ref e1, ref arms, _) => {
                 // Consume stuff in e
                 self.visit_expr(&e1);
 
@@ -381,7 +377,7 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
                 // Set the flag, indicating that we've returned
                 self.diverging = true;
             }
-            ExprLoop(ref body, label) => {
+            ExprLoop(ref body, _) => {
                 let mut tmp = self.clone();
                 tmp.loopin = Some(self.map.clone());
                 tmp.visit_block(body);
