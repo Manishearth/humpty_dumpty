@@ -1,6 +1,5 @@
-#![feature(plugin_registrar, quote, plugin, box_syntax, rustc_private, slice_patterns)]
-
-#![allow(missing_copy_implementations, unused)]
+#![feature(plugin_registrar, quote, plugin, box_syntax, rustc_private,
+           slice_patterns)]
 
 #![plugin(syntax)]
 #![plugin(rustc)]
@@ -14,14 +13,11 @@ extern crate rustc;
 #[macro_use]
 extern crate log;
 
-use rustc::lint::{Context, LintPassObject, LintArray, LintPass, Level};
+use rustc::lint::{Context, LintArray, LintPass};
 use rustc::plugin::Registry;
-use rustc::metadata::csearch;
 
 use syntax::ast::*;
-use syntax::ast_map;
 use syntax::ast_util;
-use syntax::ast_util::is_local;
 use syntax::attr::{AttrMetaMethods};
 use rustc::middle::ty::{self, ctxt};
 use rustc::util::ppaux::Repr;
@@ -39,39 +35,49 @@ impl LintPass for Pass {
         lint_array!(TEST_LINT)
     }
 
-    fn check_fn(&mut self, cx: &Context, _: visit::FnKind, decl: &FnDecl, block: &Block, span: Span, id: NodeId) {
+    fn check_fn(&mut self, cx: &Context, _: visit::FnKind, decl: &FnDecl, block: &Block, _: Span, id: NodeId) {
         // Walk the arguments and add them to the map
         let attrs = cx.tcx.map.attrs(id);
-        let mut visitor = MyVisitor::new(cx, block.id, attrs);
+        let mut visitor = LinearVisitor::new(cx, block.id, attrs);
         for arg in decl.inputs.iter() {
             visitor.walk_pat_and_add(&arg.pat);
         }
 
         visit::walk_block(&mut visitor, block);
 
-        for var in visitor.map.iter() {
-            // TODO: prettify
-            if !visitor.can_drop(var.0) {
-                cx.tcx.sess.span_err(*var.1, "dropped var");
+        if !visitor.diverging {
+            for var in visitor.map.iter() {
+                // TODO: prettify
+                if !visitor.can_drop(var.0) {
+                    cx.tcx.sess.span_err(*var.1, "dropped var");
+                }
             }
         }
     }
 }
 
 #[derive(Clone)]
-struct MyVisitor<'a : 'b, 'tcx : 'a, 'b> {
+struct LinearVisitor<'a : 'b, 'tcx : 'a, 'b> {
     // Type context, with all the goodies
     map: NodeMap<Span>, // (blockid and span for declaration)
     cx: &'b Context<'a, 'tcx>,
+    diverging: bool,
     attrs: &'tcx [Attribute],
+    breaking: bool,
+    loopin: Option<NodeMap<Span>>,
+    loopout: Option<NodeMap<Span>>,
 }
 
-impl <'a, 'tcx, 'b> MyVisitor<'a, 'tcx, 'b> {
-    fn new(cx: &'b Context<'a, 'tcx>, id: NodeId, attrs: &'tcx [Attribute]) -> Self {
+impl <'a, 'tcx, 'b> LinearVisitor<'a, 'tcx, 'b> {
+    fn new(cx: &'b Context<'a, 'tcx>, _: NodeId, attrs: &'tcx [Attribute]) -> Self {
         let map = FnvHashMap();
-        let visitor = MyVisitor { cx: cx,
+        let visitor = LinearVisitor { cx: cx,
                                   map: map,
+                                  diverging: false,
                                   attrs: attrs,
+                                  breaking: false,
+                                  loopin: None,
+                                  loopout: None
         };
         visitor
     }
@@ -131,9 +137,19 @@ impl <'a, 'tcx, 'b> MyVisitor<'a, 'tcx, 'b> {
             true
         });
     }
+
+    fn update_loopout(&mut self, e: &Expr, loopout: &Option<NodeMap<Span>>) {
+        if self.loopout.is_some() {
+            if &self.loopout != loopout {
+                self.cx.tcx.sess.span_err(e.span, "Diverging loopout");
+            }
+        } else {
+            self.loopout = loopout.clone();
+        }
+    }
 }
 
-impl<'a, 'b, 'tcx, 'v> Visitor<'v> for MyVisitor<'a, 'tcx, 'b> {
+impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
     fn visit_decl(&mut self, d: &'v Decl) {
         // If d is local and if d.ty is protected:
         //  - First handle the initializer: We need to remove any used variables that are moved
@@ -162,13 +178,15 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for MyVisitor<'a, 'tcx, 'b> {
     }
 
     fn visit_stmt(&mut self, s: &'v Stmt) {
-        if let StmtSemi(ref e, id) = s.node {
-            let ty = ty::expr_ty(self.cx.tcx, e);
-            if self.is_protected(ty) {
-                self.cx.tcx.sess.span_err(s.span, "Return type is protected but unused");
+        if !self.diverging {
+            if let StmtSemi(ref e, _) = s.node {
+                let ty = ty::expr_ty(self.cx.tcx, e);
+                if self.is_protected(ty) {
+                    self.cx.tcx.sess.span_err(s.span, "Return type is protected but unused");
+                }
             }
+            visit::walk_stmt(self, s);
         }
-        visit::walk_stmt(self, s);
     }
 
     fn visit_expr(&mut self, e: &'v Expr) {
@@ -176,6 +194,9 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for MyVisitor<'a, 'tcx, 'b> {
         // Which Exprs do we need to handle?
         // At least ExprCall and ExprMethodCall
         debug!("visit_expr: {:?}\n", e);
+        if self.diverging || self.breaking {
+            return              // Don't proceed
+        }
         match e.node {
             ExprAssign(ref lhs, ref rhs) => {
                 // Remove all protected vars in rhs
@@ -219,36 +240,57 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for MyVisitor<'a, 'tcx, 'b> {
                     self.visit_expr(&e1);
                 }
             }
-            ExprIf(ref e1, ref b, ref else_block) => {
-                // Consume stuff in expr
-                self.visit_expr(&e1);
 
-                // visit block(s)
-                if let &Some(ref e2) = else_block {
-                    // The resulting hms should be the same
-                    let mut v1 = self.clone();
-                    let mut v2 = self.clone();
-                    v1.visit_block(&b);
-                    v2.visit_expr(&e2);
-                    if v1.map != v2.map {
-                        self.cx.tcx.sess.span_err(e.span, "Branch arms are not linear");
+            ExprIf(_, ref if_block, ref else_expr) => {
+                // Walk each of the arms, and check that outcoming hms are
+                // identical
+                let mut old: Option<LinearVisitor> = None;
+
+                let mut v = self.clone();
+                v.visit_block(&if_block);
+                if !v.diverging {
+                    self.update_loopout(e, &v.loopout);
+
+                    if let Some(tmp) = old {
+                        if !tmp.breaking {
+                            v.breaking = false;
+                            if tmp.map != v.map {
+                                self.cx.tcx.sess.span_err(e.span, "Match arms are not linear");
+                            }
+                        }
                     }
-                    self.map = v1.map;
-                } else {
-                    // The resulting hm should be the same as before
-                    let mut v1 = self.clone();
-                    v1.visit_block(&b);
-                    if self.map != v1.map {
-                        self.cx.tcx.sess.span_err(e.span, "If branch is not linear");
+                    if else_expr.is_none() {
+                        v.breaking = false;
                     }
-                    // Is this necessary?
-                    // self.map = v1.map;
+                    old = Some(v);
                 }
 
-                // Make sure the returned hash map is the same as the one before
-                let v1 = self.clone();
+                if let &Some(ref else_expr) = else_expr {
+                    let mut v = self.clone();
+                    v.visit_expr(&else_expr);
+                    if !v.diverging {
+                        self.update_loopout(e, &v.loopout);
+                        if let &Some(ref tmp) = &old {
+                            if !tmp.breaking {
+                                v.breaking = false;
+                                if tmp.map != v.map {
+                                    self.cx.tcx.sess.span_err(e.span, "If branches are not linear");
+                                }
+                            }
+                        }
+                        old = Some(v);
+                    }
+                }
+
+                if let Some(old) = old {
+                    self.map = old.map;
+                    self.breaking = old.breaking;
+                } else {
+                    // Everything is diverging?
+                    self.diverging = true;
+                }
             }
-            ExprMatch(ref e1, ref arms, ref source) => {
+            ExprMatch(ref e1, ref arms, _) => {
                 // Consume stuff in e
                 self.visit_expr(&e1);
 
@@ -271,7 +313,15 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for MyVisitor<'a, 'tcx, 'b> {
                                 is_for_loop = true;
                                 // Skip pattern in outermost arm, just visit the body
                                 // TODO: Guards
-                                self.visit_expr(body);
+                                let mut tmp = self.clone();
+                                tmp.visit_expr(body);
+                                if !tmp.diverging {
+                                    self.breaking = tmp.breaking;
+                                    self.loopout = tmp.loopout;
+                                    self.map = tmp.map;
+                                } else {
+                                    self.diverging = true;
+                                }
                             }
                         }
                     }
@@ -283,23 +333,101 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for MyVisitor<'a, 'tcx, 'b> {
                     //
                     // TODO: Replace with Option<Self> once rust-lang/rust/issues/24227
                     // is fixed
-                    let mut old: Option<MyVisitor<'a, 'tcx, 'b>> = None;
+                    let mut old: Option<LinearVisitor<'a, 'tcx, 'b>> = None;
                     for arm in arms {
                         let mut v = self.clone();
                         v.visit_arm(&arm);
-                        if let Some(tmp) = old {
-                            if tmp.map != v.map {
-                                self.cx.tcx.sess.span_err(e.span, "Match arms are not linear");
+                        if !v.diverging {
+                            self.update_loopout(e, &v.loopout);
+                            if let Some(tmp) = old {
+                                if !tmp.breaking {
+                                    v.breaking = false;
+                                }
+                                if tmp.map != v.map {
+                                    self.cx.tcx.sess.span_err(e.span, "Match arms are not linear");
+                                }
                             }
+                            old = Some(v);
                         }
-                        old = Some(v);
                     }
-                    if let Some(new) = old {
-                        self.map = new.map
+
+                    if let Some(old) = old {
+                        self.map = old.map;
+                        self.breaking = old.breaking;
+                    } else {
+                        // Everything is diverging
+                        self.diverging = true;
                     }
                 }
             }
-            // TODO: We need to do something about while loops, breaks, returns.
+            ExprRet(ref e1) => {
+                // If there is a return value, consume it
+                if let &Some(ref ret) = e1 {
+                    self.visit_expr(ret);
+                }
+
+                // Check that the hm is empty
+                for var in self.map.iter() {
+                    // TODO: prettify
+                    if !self.can_drop(var.0) {
+                        self.cx.tcx.sess.span_err(*var.1, "dropped var");
+                    }
+                }
+
+                // Set the flag, indicating that we've returned
+                self.diverging = true;
+            }
+            ExprLoop(ref body, _) => {
+                let mut tmp = self.clone();
+                tmp.loopin = Some(self.map.clone());
+                tmp.visit_block(body);
+                if !tmp.diverging {
+                    if let Some(outgoing) = tmp.loopout {
+                        if outgoing == tmp.map {
+                            self.map = tmp.map;
+                        } else {
+                            self.cx.tcx.sess.span_err(e.span, "Diverging loop");
+                        }
+                    } else {
+                        self.map = tmp.map
+                    }
+                } else {
+                    self.diverging = true;
+                }
+            }
+            ExprWhile(_, _, _) => {
+                unimplemented!();
+            }
+            ExprBreak(label) => {
+                if label.is_some() {
+                    unimplemented!();
+                }
+                if let Some(ref outgoing) = self.loopout {
+                    if &self.map == outgoing {
+                        // All good
+                    } else {
+                        self.cx.tcx.sess.span_err(e.span, "Diverging break");
+                    }
+                } else {
+                    self.breaking = true;
+                    self.loopout = Some(self.map.clone());
+                }
+            }
+            ExprAgain(ref label) => {
+                if label.is_some() {
+                    unimplemented!();
+                }
+                self.breaking = true;
+                if let Some(ref incoming) = self.loopin {
+                    if &self.map == incoming {
+                        // All good
+                    } else {
+                        self.cx.tcx.sess.span_err(e.span, "Diverging continue");
+                    }
+                } else {
+                    unreachable!();
+                }
+            }
             _ => visit::walk_expr(self, e),
         }
     }
@@ -323,12 +451,14 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for MyVisitor<'a, 'tcx, 'b> {
         debug!("visit_block: stmts: {:?}\n", b.stmts);
         visit::walk_block(self, b);
 
-        if let Some(ref e) = b.expr {
-            debug!("visit_block: expr is {:?}\n", e);
-            let ty = ty::expr_ty(self.cx.tcx, e);
-            if self.is_protected(ty) {
-                // This value is returned, and thus we can consume it
-                visit::walk_expr(self, e);
+        if !self.diverging {
+            if let Some(ref e) = b.expr {
+                debug!("visit_block: expr is {:?}\n", e);
+                let ty = ty::expr_ty(self.cx.tcx, e);
+                if self.is_protected(ty) {
+                    // This value is returned, and thus we can consume it
+                    visit::walk_expr(self, e);
+                }
             }
         }
     }
@@ -342,6 +472,7 @@ fn expr_to_deflocal<'tcx>(tcx: &'tcx ctxt, expr: &Expr) -> Option<NodeId> {
         None
     }
 }
+
 
 #[plugin_registrar]
 pub fn plugin_registrar(reg: &mut Registry) {

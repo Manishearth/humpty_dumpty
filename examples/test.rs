@@ -12,10 +12,6 @@ impl Foo {
     fn something(self) -> Self {
         self
     }
-
-    fn dropit(self) {
-        // Should err
-    }
 }
 
 // Should not warn, since we're not dropping anything
