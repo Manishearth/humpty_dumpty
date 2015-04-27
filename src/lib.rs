@@ -317,11 +317,15 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
                                 // Skip pattern in outermost arm, just visit the body
                                 // TODO: Guards
                                 let mut tmp = self.clone();
-                                tmp.visit_expr(body);
+                                tmp.visit_block(loop_block);
                                 if !tmp.diverging {
-                                    self.breaking = tmp.breaking;
-                                    self.loopout = tmp.loopout;
-                                    self.map = tmp.map;
+                                    if let Some(hm) = tmp.loopout {
+                                        if tmp.map != hm {
+                                            self.cx.tcx.sess.span_err(e.span, "Non-linear for loop");
+                                        } else {
+                                            self.map = tmp.map;
+                                        }
+                                    }
                                 } else {
                                     self.diverging = true;
                                 }
@@ -386,13 +390,7 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
                 tmp.visit_block(body);
                 if !tmp.diverging {
                     if let Some(outgoing) = tmp.loopout {
-                        if outgoing == tmp.map {
-                            self.map = tmp.map;
-                        } else {
-                            self.cx.tcx.sess.span_err(e.span, "Diverging loop");
-                        }
-                    } else {
-                        self.map = tmp.map
+                        self.map = outgoing;
                     }
                 } else {
                     self.diverging = true;
