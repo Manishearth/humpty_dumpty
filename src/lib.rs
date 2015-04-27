@@ -348,10 +348,13 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
                             self.update_loopout(e, &v.loopout);
                             if let Some(tmp) = old {
                                 if !tmp.breaking {
+                                    if !v.breaking && tmp.map != v.map {
+                                        // Neither are breaking, but their scopes are different
+                                        self.cx.tcx.sess.span_err(e.span, "Match arms are not linear");
+                                    } else if v.breaking && tmp.map != self.map {
+                                        self.cx.tcx.sess.span_err(e.span, "Match arms are not linear");
+                                    }
                                     v.breaking = false;
-                                }
-                                if tmp.map != v.map {
-                                    self.cx.tcx.sess.span_err(e.span, "Match arms are not linear");
                                 }
                             }
                             old = Some(v);
