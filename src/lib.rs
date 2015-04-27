@@ -252,6 +252,9 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
                     self.update_loopout(e, &v.loopout);
 
                     if else_expr.is_none() {
+                        if v.map != self.map && !v.breaking {
+                            self.cx.tcx.sess.span_err(e.span, "If branch is not linear");
+                        }
                         v.breaking = false;
                     }
                     old = Some(v);
