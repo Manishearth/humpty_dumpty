@@ -382,7 +382,7 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for MyVisitor<'a, 'tcx, 'b> {
                 if !is_for_loop {
                     // Walk each of the arms, and check that outcoming hms are
                     // identical
-                    let mut old: Option<Self> = None;
+                    let mut old: Option<MyVisitor> = None;
                     for arm in arms {
                         let mut v = self.clone();
                         v.visit_arm(&arm);
