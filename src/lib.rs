@@ -394,6 +394,7 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
                 if label.is_some() {
                     unimplemented!();
                 }
+                self.breaking = true;
                 if let Some(ref outgoing) = self.loopout {
                     if &self.map == outgoing {
                         // All good
@@ -401,7 +402,6 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
                         self.cx.tcx.sess.span_err(e.span, "Diverging break");
                     }
                 } else {
-                    self.breaking = true;
                     self.loopout = Some(self.map.clone());
                 }
             }
