@@ -1,5 +1,7 @@
 ## Humpty Dumpty
 
+[![Build Status](https://travis-ci.org/Manishearth/humpty_dumpty.svg)](https://travis-ci.org/Manishearth/humpty_dumpty)
+
 The goal of this library is to be able to define types that cannot be implicitly
 dropped except in controlled situations.
 
