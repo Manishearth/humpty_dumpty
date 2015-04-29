@@ -251,15 +251,10 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
                 if !v.diverging {
                     self.update_loopout(e, &v.loopout);
 
-                    if let Some(tmp) = old {
-                        if !tmp.breaking {
-                            v.breaking = false;
-                            if tmp.map != v.map {
-                                self.cx.tcx.sess.span_err(e.span, "Match arms are not linear");
-                            }
-                        }
-                    }
                     if else_expr.is_none() {
+                        if v.map != self.map && !v.breaking {
+                            self.cx.tcx.sess.span_err(e.span, "If branch is not linear");
+                        }
                         v.breaking = false;
                     }
                     old = Some(v);
@@ -272,11 +267,19 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
                         self.update_loopout(e, &v.loopout);
                         if let &Some(ref tmp) = &old {
                             if !tmp.breaking {
-                                v.breaking = false;
-                                if tmp.map != v.map {
+                                if !v.breaking && tmp.map != v.map {
+                                    // neither branch is breaking, but their maps are unequal
+                                    self.cx.tcx.sess.span_err(e.span, "If branches are not linear");
+                                } else if v.breaking && tmp.map != self.map {
+                                    // `else` is breaking and `if` map is not neutral
                                     self.cx.tcx.sess.span_err(e.span, "If branches are not linear");
                                 }
+                                // The resulting state is non-breaking
+                                v.breaking = false;
                             }
+                            // If tmp (the `if` branch) is breaking the whole if
+                            // expr is breaking iff the `else` branch is
+                            // breaking.
                         }
                         old = Some(v);
                     }
@@ -402,6 +405,7 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
                 if label.is_some() {
                     unimplemented!();
                 }
+                self.breaking = true;
                 if let Some(ref outgoing) = self.loopout {
                     if &self.map == outgoing {
                         // All good
@@ -409,7 +413,6 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
                         self.cx.tcx.sess.span_err(e.span, "Diverging break");
                     }
                 } else {
-                    self.breaking = true;
                     self.loopout = Some(self.map.clone());
                 }
             }
