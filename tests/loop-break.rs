@@ -100,3 +100,31 @@ fn loop_if_break_else_break2() {
         break;
     }
 }
+
+#[test]
+fn loop_count_test() {
+    let c = Foo;
+    let mut n = 0;
+    loop {
+        if n < 10 {
+            n += 1;
+        } else {
+            c.close();
+            break;
+        }
+    }
+}
+
+#[test]
+fn loop_count_test2() {
+    let c = Foo;
+    let mut n = 0;
+    loop {
+        if n >= 10 {
+            c.close();
+            break;
+        } else {
+            n += 1;
+        }
+    }
+}
