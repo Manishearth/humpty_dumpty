@@ -3,10 +3,16 @@
 name = "humpty_dumpty"
 version = "0.0.1"
 authors = ["Manish Goregaokar <manishsmail@gmail.com>"]
+description = "A plugin to prevent certain types from being dropped, thus making them linear"
+repository = "https://github.com/Manishearth/humpty_dumpty"
+readme = "README.md"
+license = "MPL-2.0"
+keywords = ["linear", "drop", "plugin"]
+
 
 [lib]
 name = "humpty_dumpty"
-crate_type = ["dylib"]
+plugin = true
 
-[dev-dependencies.compiletest]
-git = "https://github.com/laumann/compiletest-rs.git"
+[dev-dependencies]
+compiletest_rs = "*"
