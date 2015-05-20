@@ -140,7 +140,7 @@ impl <'a, 'tcx, 'b> LinearVisitor<'a, 'tcx, 'b> {
     fn update_loopout(&mut self, e: &Expr, loopout: &Option<NodeMap<Span>>) {
         if self.loopout.is_some() {
             if &self.loopout != loopout {
-                self.cx.span_lint(DROPPED_LINEAR, e.span, "Diverging loopout");
+                self.cx.span_lint(DROPPED_LINEAR, e.span, "Non-linear loopout");
             }
         } else {
             self.loopout = loopout.clone();
@@ -404,7 +404,7 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
                     if &self.map == outgoing {
                         // All good
                     } else {
-                        self.cx.span_lint(DROPPED_LINEAR, e.span, "Diverging break");
+                        self.cx.span_lint(DROPPED_LINEAR, e.span, "Non-linear break");
                     }
                 } else {
                     self.loopout = Some(self.map.clone());
@@ -419,7 +419,7 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
                     if &self.map == incoming {
                         // All good
                     } else {
-                        self.cx.span_lint(DROPPED_LINEAR, e.span, "Diverging continue");
+                        self.cx.span_lint(DROPPED_LINEAR, e.span, "Non-linear continue");
                     }
                 } else {
                     unreachable!();
