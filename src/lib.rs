@@ -45,7 +45,7 @@ impl LintPass for Pass {
 
         visit::walk_block(&mut visitor, block);
 
-        if !visitor.diverging {
+        if !visitor.returning {
             for var in visitor.map.iter() {
                 // TODO: prettify
                 if !visitor.can_drop(var.0) {
@@ -61,7 +61,7 @@ struct LinearVisitor<'a : 'b, 'tcx : 'a, 'b> {
     // Type context, with all the goodies
     map: NodeMap<Span>, // (blockid and span for declaration)
     cx: &'b Context<'a, 'tcx>,
-    diverging: bool,
+    returning: bool,
     attrs: &'tcx [Attribute],
     breaking: bool,
     loopin: Option<NodeMap<Span>>,
@@ -73,7 +73,7 @@ impl <'a, 'tcx, 'b> LinearVisitor<'a, 'tcx, 'b> {
         let map = FnvHashMap();
         let visitor = LinearVisitor { cx: cx,
                                   map: map,
-                                  diverging: false,
+                                  returning: false,
                                   attrs: attrs,
                                   breaking: false,
                                   loopin: None,
@@ -175,7 +175,7 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
     }
 
     fn visit_stmt(&mut self, s: &'v Stmt) {
-        if !self.diverging {
+        if !self.returning {
             if let StmtSemi(ref e, _) = s.node {
                 let ty = ty::expr_ty(self.cx.tcx, e);
                 if self.is_protected(ty) {
@@ -190,7 +190,7 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
         // Visit and remove all consumed values
         // Which Exprs do we need to handle?
         // At least ExprCall and ExprMethodCall
-        if self.diverging || self.breaking {
+        if self.returning || self.breaking {
             return              // Don't proceed
         }
         match e.node {
@@ -242,7 +242,7 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
 
                 let mut v = self.clone();
                 v.visit_block(&if_block);
-                if !v.diverging {
+                if !v.returning {
                     self.update_loopout(e, &v.loopout);
 
                     if else_expr.is_none() {
@@ -257,7 +257,7 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
                 if let &Some(ref else_expr) = else_expr {
                     let mut v = self.clone();
                     v.visit_expr(&else_expr);
-                    if !v.diverging {
+                    if !v.returning {
                         self.update_loopout(e, &v.loopout);
                         if let &Some(ref tmp) = &old {
                             if !tmp.breaking {
@@ -283,8 +283,8 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
                     self.map = old.map;
                     self.breaking = old.breaking;
                 } else {
-                    // Everything is diverging?
-                    self.diverging = true;
+                    // Everything is returning?
+                    self.returning = true;
                 }
             }
             ExprMatch(ref e1, ref arms, _) => {
@@ -311,7 +311,7 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
                                 // TODO: Guards
                                 let mut tmp = self.clone();
                                 tmp.visit_block(loop_block);
-                                if !tmp.diverging {
+                                if !tmp.returning {
                                     if let Some(hm) = tmp.loopout {
                                         if tmp.map != hm {
                                             self.cx.span_lint(DROPPED_LINEAR, e.span, "Non-linear for loop");
@@ -320,7 +320,7 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
                                         }
                                     }
                                 } else {
-                                    self.diverging = true;
+                                    self.returning = true;
                                 }
                             }
                         }
@@ -337,7 +337,7 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
                     for arm in arms {
                         let mut v = self.clone();
                         v.visit_arm(&arm);
-                        if !v.diverging {
+                        if !v.returning {
                             self.update_loopout(e, &v.loopout);
                             if let Some(tmp) = old {
                                 if !tmp.breaking {
@@ -358,8 +358,8 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
                         self.map = old.map;
                         self.breaking = old.breaking;
                     } else {
-                        // Everything is diverging
-                        self.diverging = true;
+                        // Everything is returning
+                        self.returning = true;
                     }
                 }
             }
@@ -378,18 +378,18 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
                 }
 
                 // Set the flag, indicating that we've returned
-                self.diverging = true;
+                self.returning = true;
             }
             ExprLoop(ref body, _) => {
                 let mut tmp = self.clone();
                 tmp.loopin = Some(self.map.clone());
                 tmp.visit_block(body);
-                if !tmp.diverging {
+                if !tmp.returning {
                     if let Some(outgoing) = tmp.loopout {
                         self.map = outgoing;
                     }
                 } else {
-                    self.diverging = true;
+                    self.returning = true;
                 }
             }
             ExprWhile(_, _, _) => {
@@ -447,7 +447,7 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
     fn visit_block(&mut self, b: &'v Block) {
         visit::walk_block(self, b);
 
-        if !self.diverging {
+        if !self.returning {
             if let Some(ref e) = b.expr {
                 let ty = ty::expr_ty(self.cx.tcx, e);
                 if self.is_protected(ty) {
