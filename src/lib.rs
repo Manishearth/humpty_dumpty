@@ -119,7 +119,6 @@ impl <'a, 'tcx, 'b> LinearVisitor<'a, 'tcx, 'b> {
                     }
                 });
                 if protected {
-                    self.cx.tcx.sess.span_note(p.span, &format!("Adding drop protected type to map. Id: {:?}", p.id));
                     self.map.insert(p.id, p.span);
                 }
             } else if let PatWild(_) = p.node {
@@ -157,9 +156,7 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
         //  - then add pat.id to self.map so we can track it going forward
         // We also need to handle if l.source is a LocalFor
 
-        // self.cx.tcx.sess.span_note(d.span, &format!("decl: {:?}\n", d));
         if let DeclLocal(ref l) = d.node {
-            debug!("decllocal: {:?}\n", ty::pat_ty(self.cx.tcx, &l.pat));
             if l.source == LocalFor {
                 unimplemented!();
             }
@@ -193,7 +190,6 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
         // Visit and remove all consumed values
         // Which Exprs do we need to handle?
         // At least ExprCall and ExprMethodCall
-        debug!("visit_expr: {:?}\n", e);
         if self.diverging || self.breaking {
             return              // Don't proceed
         }
@@ -221,9 +217,7 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
                 // moved, remove it from self.map. If we got this far, it is a
                 // move
                 if let Some(id) = expr_to_deflocal(self.cx.tcx, e) {
-                    debug!("Trying to find id: {:?}\n", id);
                     if self.map.contains_key(&id) {
-                        self.cx.tcx.sess.span_note(e.span, "Consuming protected var");
                         self.map.remove(&id).unwrap();
                     }
                 }
@@ -312,7 +306,6 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
                     if let ExprLoop(ref loop_block, _) = body.node {
                         if let &Block { expr: Some(ref loop_expr), .. } = &**loop_block {
                             if let ExprMatch(_, _, MatchSource::ForLoopDesugar) = loop_expr.node {
-                                self.cx.tcx.sess.span_note(e.span, "Desugar");
                                 is_for_loop = true;
                                 // Skip pattern in outermost arm, just visit the body
                                 // TODO: Guards
@@ -452,12 +445,10 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
     }
 
     fn visit_block(&mut self, b: &'v Block) {
-        debug!("visit_block: stmts: {:?}\n", b.stmts);
         visit::walk_block(self, b);
 
         if !self.diverging {
             if let Some(ref e) = b.expr {
-                debug!("visit_block: expr is {:?}\n", e);
                 let ty = ty::expr_ty(self.cx.tcx, e);
                 if self.is_protected(ty) {
                     // This value is returned, and thus we can consume it
