@@ -4,6 +4,7 @@
 #![allow(unused_attributes)]
 #![allow(unused_variables)]
 #![allow(dead_code)]
+#![deny(dropped_linear)]
 
 fn main() {}
 
