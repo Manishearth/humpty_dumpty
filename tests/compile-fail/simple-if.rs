@@ -15,19 +15,30 @@ impl Foo {
 }
 
 fn test1() {
-    let f = Foo; //~ ERROR dropped var
-    if false { return } else { f.close(); }
+    let f = Foo;
+    if false {
+        //~^ ERROR If branch is not linear
+        f.close();
+    }
 }
 
 fn test2() {
-    let f = Foo; //~ERROR dropped var
-    if true { f.close(); } else { return }
+    let f = Foo; //~ ERROR dropped var
+    if false {
+        //~^ ERROR If branches are not linear
+        f.close();
+    } else {
+
+    }
 }
 
 fn test3() {
     let f = Foo;
-    if true { f.close(); }
-    //~^ ERROR If branch is not linear
+    if false {
+        //~^ ERROR If branches are not linear
+    } else {
+        f.close();
+    }
 }
 
 fn main() {}

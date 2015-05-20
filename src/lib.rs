@@ -26,13 +26,13 @@ use rustc::middle::def::*;
 use syntax::visit::{self, Visitor};
 use syntax::codemap::Span;
 
-declare_lint!(TEST_LINT, Warn, "Warn about items named 'lintme'");
+declare_lint!(DROPPED_LINEAR, Warn, "Warn about linear values being dropped");
 
 struct Pass;
 
 impl LintPass for Pass {
     fn get_lints(&self) -> LintArray {
-        lint_array!(TEST_LINT)
+        lint_array!(DROPPED_LINEAR)
     }
 
     fn check_fn(&mut self, cx: &Context, _: visit::FnKind, decl: &FnDecl, block: &Block, _: Span, id: NodeId) {
@@ -49,7 +49,7 @@ impl LintPass for Pass {
             for var in visitor.map.iter() {
                 // TODO: prettify
                 if !visitor.can_drop(var.0) {
-                    cx.tcx.sess.span_err(*var.1, "dropped var");
+                    cx.span_lint(DROPPED_LINEAR, *var.1, "dropped var");
                 }
             }
         }
@@ -119,7 +119,6 @@ impl <'a, 'tcx, 'b> LinearVisitor<'a, 'tcx, 'b> {
                     }
                 });
                 if protected {
-                    self.cx.tcx.sess.span_note(p.span, &format!("Adding drop protected type to map. Id: {:?}", p.id));
                     self.map.insert(p.id, p.span);
                 }
             } else if let PatWild(_) = p.node {
@@ -131,7 +130,7 @@ impl <'a, 'tcx, 'b> LinearVisitor<'a, 'tcx, 'b> {
                     }
                 });
                 if protected && !self.can_drop(&pat.id) {
-                    self.cx.tcx.sess.span_err(p.span, "Protected type is dropped");
+                    self.cx.span_lint(DROPPED_LINEAR, p.span, "Protected type is dropped");
                 }
             }
             true
@@ -141,7 +140,7 @@ impl <'a, 'tcx, 'b> LinearVisitor<'a, 'tcx, 'b> {
     fn update_loopout(&mut self, e: &Expr, loopout: &Option<NodeMap<Span>>) {
         if self.loopout.is_some() {
             if &self.loopout != loopout {
-                self.cx.tcx.sess.span_err(e.span, "Diverging loopout");
+                self.cx.span_lint(DROPPED_LINEAR, e.span, "Diverging loopout");
             }
         } else {
             self.loopout = loopout.clone();
@@ -157,9 +156,7 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
         //  - then add pat.id to self.map so we can track it going forward
         // We also need to handle if l.source is a LocalFor
 
-        // self.cx.tcx.sess.span_note(d.span, &format!("decl: {:?}\n", d));
         if let DeclLocal(ref l) = d.node {
-            debug!("decllocal: {:?}\n", ty::pat_ty(self.cx.tcx, &l.pat));
             if l.source == LocalFor {
                 unimplemented!();
             }
@@ -182,7 +179,7 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
             if let StmtSemi(ref e, _) = s.node {
                 let ty = ty::expr_ty(self.cx.tcx, e);
                 if self.is_protected(ty) {
-                    self.cx.tcx.sess.span_err(s.span, "Return type is protected but unused");
+                    self.cx.span_lint(DROPPED_LINEAR, s.span, "Return type is protected but unused");
                 }
             }
             visit::walk_stmt(self, s);
@@ -193,7 +190,6 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
         // Visit and remove all consumed values
         // Which Exprs do we need to handle?
         // At least ExprCall and ExprMethodCall
-        debug!("visit_expr: {:?}\n", e);
         if self.diverging || self.breaking {
             return              // Don't proceed
         }
@@ -211,7 +207,7 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
 
                 // Check that we're not overwriting something
                 if self.map.contains_key(&defid) {
-                    self.cx.tcx.sess.span_err(lhs.span, "cannot overwrite linear type");
+                    self.cx.span_lint(DROPPED_LINEAR, lhs.span, "cannot overwrite linear type");
                 } else {
                     self.map.insert(defid, e.span);
                 }
@@ -221,9 +217,7 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
                 // moved, remove it from self.map. If we got this far, it is a
                 // move
                 if let Some(id) = expr_to_deflocal(self.cx.tcx, e) {
-                    debug!("Trying to find id: {:?}\n", id);
                     if self.map.contains_key(&id) {
-                        self.cx.tcx.sess.span_note(e.span, "Consuming protected var");
                         self.map.remove(&id).unwrap();
                     }
                 }
@@ -253,7 +247,7 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
 
                     if else_expr.is_none() {
                         if v.map != self.map && !v.breaking {
-                            self.cx.tcx.sess.span_err(e.span, "If branch is not linear");
+                            self.cx.span_lint(DROPPED_LINEAR, e.span, "If branch is not linear");
                         }
                         v.breaking = false;
                     }
@@ -269,10 +263,10 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
                             if !tmp.breaking {
                                 if !v.breaking && tmp.map != v.map {
                                     // neither branch is breaking, but their maps are unequal
-                                    self.cx.tcx.sess.span_err(e.span, "If branches are not linear");
+                                    self.cx.span_lint(DROPPED_LINEAR, e.span, "If branches are not linear");
                                 } else if v.breaking && tmp.map != self.map {
                                     // `else` is breaking and `if` map is not neutral
-                                    self.cx.tcx.sess.span_err(e.span, "If branches are not linear");
+                                    self.cx.span_lint(DROPPED_LINEAR, e.span, "If branches are not linear");
                                 }
                                 // The resulting state is non-breaking
                                 v.breaking = false;
@@ -312,7 +306,6 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
                     if let ExprLoop(ref loop_block, _) = body.node {
                         if let &Block { expr: Some(ref loop_expr), .. } = &**loop_block {
                             if let ExprMatch(_, _, MatchSource::ForLoopDesugar) = loop_expr.node {
-                                self.cx.tcx.sess.span_note(e.span, "Desugar");
                                 is_for_loop = true;
                                 // Skip pattern in outermost arm, just visit the body
                                 // TODO: Guards
@@ -321,7 +314,7 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
                                 if !tmp.diverging {
                                     if let Some(hm) = tmp.loopout {
                                         if tmp.map != hm {
-                                            self.cx.tcx.sess.span_err(e.span, "Non-linear for loop");
+                                            self.cx.span_lint(DROPPED_LINEAR, e.span, "Non-linear for loop");
                                         } else {
                                             self.map = tmp.map;
                                         }
@@ -350,9 +343,9 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
                                 if !tmp.breaking {
                                     if !v.breaking && tmp.map != v.map {
                                         // Neither are breaking, but their scopes are different
-                                        self.cx.tcx.sess.span_err(e.span, "Match arms are not linear");
+                                        self.cx.span_lint(DROPPED_LINEAR, e.span, "Match arms are not linear");
                                     } else if v.breaking && tmp.map != self.map {
-                                        self.cx.tcx.sess.span_err(e.span, "Match arms are not linear");
+                                        self.cx.span_lint(DROPPED_LINEAR, e.span, "Match arms are not linear");
                                     }
                                     v.breaking = false;
                                 }
@@ -380,7 +373,7 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
                 for var in self.map.iter() {
                     // TODO: prettify
                     if !self.can_drop(var.0) {
-                        self.cx.tcx.sess.span_err(*var.1, "dropped var");
+                        self.cx.span_lint(DROPPED_LINEAR, *var.1, "dropped var");
                     }
                 }
 
@@ -411,7 +404,7 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
                     if &self.map == outgoing {
                         // All good
                     } else {
-                        self.cx.tcx.sess.span_err(e.span, "Diverging break");
+                        self.cx.span_lint(DROPPED_LINEAR, e.span, "Diverging break");
                     }
                 } else {
                     self.loopout = Some(self.map.clone());
@@ -426,7 +419,7 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
                     if &self.map == incoming {
                         // All good
                     } else {
-                        self.cx.tcx.sess.span_err(e.span, "Diverging continue");
+                        self.cx.span_lint(DROPPED_LINEAR, e.span, "Diverging continue");
                     }
                 } else {
                     unreachable!();
@@ -452,12 +445,10 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
     }
 
     fn visit_block(&mut self, b: &'v Block) {
-        debug!("visit_block: stmts: {:?}\n", b.stmts);
         visit::walk_block(self, b);
 
         if !self.diverging {
             if let Some(ref e) = b.expr {
-                debug!("visit_block: expr is {:?}\n", e);
                 let ty = ty::expr_ty(self.cx.tcx, e);
                 if self.is_protected(ty) {
                     // This value is returned, and thus we can consume it

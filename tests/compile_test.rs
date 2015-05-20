@@ -1,7 +1,5 @@
 extern crate compiletest_rs as compiletest;
 
-use std::env;
-use std::process::Command;
 use std::path::PathBuf;
 
 fn run_mode(mode: &'static str) {
