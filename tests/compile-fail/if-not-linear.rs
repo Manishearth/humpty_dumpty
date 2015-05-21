@@ -52,4 +52,18 @@ fn test5() {
     }
 }
 
+// #23
+fn test6() {
+    let x = Foo;
+    loop {
+        if true {
+            //~^ ERROR Match arms are not linear
+            x.close();
+            break
+        } else {
+            let y = Foo;
+        }
+    }
+}
+
 fn main() {}
