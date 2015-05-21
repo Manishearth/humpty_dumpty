@@ -280,8 +280,12 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
                 }
 
                 if let Some(old) = old {
-                    self.map = old.map;
-                    self.breaking = old.breaking;
+                    if !old.map.keys().all(|k| self.map.contains_key(k)) {
+                        self.cx.span_lint(DROPPED_LINEAR, e.span, "Match arms are not linear");
+                    } else {
+                        self.map = old.map;
+                        self.breaking = old.breaking;
+                    }
                 } else {
                     // Everything is returning?
                     self.returning = true;
@@ -355,8 +359,12 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
                     }
 
                     if let Some(old) = old {
-                        self.map = old.map;
-                        self.breaking = old.breaking;
+                        if !old.map.keys().all(|k| self.map.contains_key(k)) {
+                            self.cx.span_lint(DROPPED_LINEAR, e.span, "Match arms are not linear");
+                        } else {
+                            self.map = old.map;
+                            self.breaking = old.breaking;
+                        }
                     } else {
                         // Everything is returning
                         self.returning = true;

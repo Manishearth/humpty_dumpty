@@ -24,8 +24,9 @@ fn test1() {
     let foo = Foo::new();
     match foo.one_or_the_other(true) {
         //~^ ERROR Match arms are not linear
+        //~^^ ERROR Match arms are not linear
         Ok(foo) => foo.drop(),
-        Err(foo) => {} //~ ERROR dropped var
+        Err(foo) => {}
     }
 }
 
@@ -49,6 +50,23 @@ fn test3() {
             false => {
                 x.drop();
                 break
+            }
+        }
+    }
+}
+
+// #23
+fn test4() {
+    let x = Foo;
+    loop {
+        match true {
+            //~^ ERROR Match arms are not linear
+            true => {
+                x.drop();
+                break
+            }
+            false => {
+                let y = Foo;
             }
         }
     }
