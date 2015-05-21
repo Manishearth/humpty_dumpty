@@ -387,6 +387,8 @@ impl<'a, 'b, 'tcx, 'v> Visitor<'v> for LinearVisitor<'a, 'tcx, 'b> {
                 if !tmp.returning {
                     if let Some(outgoing) = tmp.loopout {
                         self.map = outgoing;
+                    } else {
+                        self.map = tmp.map;
                     }
                 } else {
                     self.returning = true;
