@@ -20,7 +20,7 @@ impl Foo {
     fn drop(self) {}
 }
 
-fn one() {
+fn test1() {
     let foo = Foo::new();
     match foo.one_or_the_other(true) {
         //~^ ERROR Match arms are not linear
@@ -29,7 +29,7 @@ fn one() {
     }
 }
 
-fn the_other() {
+fn test2() {
     let foo = Foo::new();
     match foo.one_or_the_other(false) {
         //~^ ERROR Match arms are not linear
