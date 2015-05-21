@@ -30,4 +30,26 @@ fn test3() {
     //~^ ERROR If branch is not linear
 }
 
+fn test4() {
+    let x = Foo;
+    loop {
+        if true {
+            //~^ERROR If branches are not linear
+            let y = Foo;
+        } else {
+            x.close();
+            break
+        }
+    }
+}
+
+fn test5() {
+    let x = Foo;
+    if true {
+        //~^ ERROR If branches are not linear
+    } else {
+        x.close();
+    }
+}
+
 fn main() {}
