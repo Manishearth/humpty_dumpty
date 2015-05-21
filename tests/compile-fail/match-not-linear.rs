@@ -37,3 +37,19 @@ fn the_other() {
         Err(foo) => foo.drop()
     }
 }
+
+fn test3() {
+    let x = Foo;
+    loop {
+        match true {
+            //~^ ERROR Match arms are not linear
+            true => {
+                let y = Foo;
+            }
+            false => {
+                x.drop();
+                break
+            }
+        }
+    }
+}
