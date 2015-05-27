@@ -18,3 +18,21 @@ fn main() {
         let y = Foo; //~ ERROR dropped var
     }
 }
+
+fn test2() {
+    let x = Foo;
+    loop {
+        match 2 {
+            1 => {
+                close(x);
+                break;
+            }
+            2 => {
+                break; //~ERROR Non-linear break
+            }
+            _ => {
+
+            }
+        }
+    }
+}
