@@ -84,7 +84,7 @@ impl <'a, 'tcx, 'b> LinearVisitor<'a, 'tcx, 'b> {
 
     fn is_protected(&self, ty: ty::Ty<'tcx>) -> bool {
         match ty.sty {
-            ty::sty::ty_enum(did, _) | ty::sty::ty_struct(did, _)
+            ty::TypeVariants::TyEnum(did, _) | ty::TypeVariants::TyStruct(did, _)
                 if ty::has_attr(self.cx.tcx, did, "drop_protect") => true,
             _ => false,
         }
